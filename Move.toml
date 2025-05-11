@@ -1,0 +1,19 @@
+// File: Move.toml
+[package]
+name = "HybridGovernance"
+version = "0.0.1"
+// published-at = "0x..." // Optional: Record the address after publishing
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "main" }
+// For older Sui versions, it might be:
+// Sui = { local = "../sui/sui_programmability/sui-framework" } // Adjust path if Sui source is local
+
+[addresses]
+// This is where you'd put the address of your published package if you need to refer to it.
+// For initial deployment, this might be empty or have placeholders.
+// hybrid_governance_admin = "0xADMIN_ADDRESS_HERE" // Example if you have an admin address
+hybrid_governance = "0x0" // Placeholder, will be filled after first publish
+```bash
+#!/bin/bash
+
