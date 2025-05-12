@@ -107,8 +107,8 @@ The system is designed with a modular architecture for scalability and ease of m
 
 Join our community to collaborate and stay updated:
 - **Discussions**: Participate in project discussions on [GitHub Discussions](https://github.com/GizzZmo/Governance-System-Enhancement-Strategy/discussions).
-- **Social Media**: Follow our updates on [X (Twitter)](https://twitter.com/YourProjectHandle).
-- **Discord/Slack**: [Join our community chat](https://discord.gg/YourProjectHandle).
+- **Social Media**: Follow our updates on [X (Twitter)]((https://x.com/Jon_Arve)).
+- **Discord/Slack**: [Join our community chat](https://discord.gg/lionsheart88_04801).
 
 ---
 
