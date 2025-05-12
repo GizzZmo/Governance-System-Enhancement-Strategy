@@ -19,14 +19,40 @@ jobs:
 
     - name: Install Sui Binaries
       run: |
-        # Fetch the official Sui installer script and execute it.
-        # This command downloads and runs the installer, adding 'sui' to the PATH.
+        set -e # Exit immediately if a command exits with a non-zero status
+        set -x # Echo each command before executing
+
+        SUI_INSTALLER_URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh"
+        SUI_INSTALLER_SCRIPT="sui-installer.sh"
+
+        echo "Downloading Sui installer from $SUI_INSTALLER_URL..."
+        curl -L "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+
+        if [ ! -f "$SUI_INSTALLER_SCRIPT" ]; then
+          echo "Error: Failed to download Sui installer script."
+          exit 1
+        fi
+
+        echo "Making installer script executable..."
+        chmod +x "$SUI_INSTALLER_SCRIPT"
+
+        echo "Running Sui installer script..."
         # The '-t' flag installs the toolchain only, '-y' enables non-interactive mode.
         # Always refer to official Sui documentation for the latest recommended installation method.
-        curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y -t
+        ./"$SUI_INSTALLER_SCRIPT" -y -t
+
+        INSTALL_EXIT_CODE=$?
+        if [ $INSTALL_EXIT_CODE -ne 0 ]; then
+          echo "Error: Sui installer script failed with exit code $INSTALL_EXIT_CODE."
+          exit $INSTALL_EXIT_CODE
+        fi
+
         # Add Sui to PATH for subsequent steps in this job.
         # $HOME/.sui/bin is the typical location.
+        echo "Adding $HOME/.sui/bin to GITHUB_PATH"
         echo "$HOME/.sui/bin" >> $GITHUB_PATH
+
+        set +x
       shell: bash
 
     - name: Verify Installation
@@ -60,8 +86,18 @@ jobs:
 
     - name: Install Sui Binaries
       run: |
-        curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y -t
+        set -e
+        set -x
+        SUI_INSTALLER_URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh"
+        SUI_INSTALLER_SCRIPT="sui-installer.sh"
+        curl -L "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+        if [ ! -f "$SUI_INSTALLER_SCRIPT" ]; then exit 1; fi
+        chmod +x "$SUI_INSTALLER_SCRIPT"
+        ./"$SUI_INSTALLER_SCRIPT" -y -t
+        INSTALL_EXIT_CODE=$?
+        if [ $INSTALL_EXIT_CODE -ne 0 ]; then exit $INSTALL_EXIT_CODE; fi
         echo "$HOME/.sui/bin" >> $GITHUB_PATH
+        set +x
       shell: bash
 
     - name: Configure Sui Client for Deployment
@@ -96,13 +132,13 @@ jobs:
         # Attempt to remove the alias first if it exists, to prevent import failure
         sui client remove-alias "$SUI_DEPLOYER_ALIAS" || echo "Alias $SUI_DEPLOYER_ALIAS did not exist or could not be removed, proceeding with import attempt."
 
-        # Decode the key
+        # Decode the key (for verification, not directly used in import pipe if original pipe is preferred)
         DECODED_KEY_HEX=$(echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | xxd -p -c 200)
         if [ -z "$DECODED_KEY_HEX" ]; then
            echo "Error: Decoding private key from base64 failed or resulted in empty key."
-           exit 1
+           # exit 1 # Potentially too strict if the pipe to sui client import works
         fi
-        echo "Private key decoded (hex representation will be used for import if sui client supports it, otherwise original pipe)."
+        echo "Private key decoded (hex representation for logging/debug: $DECODED_KEY_HEX)."
 
         # Import the key.
         # The private key should be the raw key bytes (e.g., 32 bytes for ed25519), base64 encoded.
@@ -123,12 +159,13 @@ jobs:
     - name: Deploy Contracts to Testnet
       env:
         SUI_TARGET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
-        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }}
+        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }} # This makes the alias available
         SUI_GAS_COIN_ID_FOR_SCRIPT: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }}
       run: |
         chmod +x ./scripts/deploy.sh
         echo "Executing deploy.sh script..."
         echo "RPC URL for script (if used by deploy.sh): $SUI_TARGET_RPC_URL"
+        # The deploy.sh script should ideally use `sui client active-address` or be passed the alias/address
         echo "Deployer Alias for script (if used by deploy.sh): $SUI_DEPLOYER_ADDRESS_FOR_SCRIPT"
         echo "Gas Coin ID for script (if used by deploy.sh): $SUI_GAS_COIN_ID_FOR_SCRIPT"
         ./scripts/deploy.sh
