@@ -1,0 +1,67 @@
+name: CI and Deployment for Move Project
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Sui Environment
+      run: |
+        # Recommended: Install Sui CLI which includes Move tools
+        # See official Sui documentation for the latest installation script
+        # Example (may vary):
+        curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y
+        source "$HOME/.cargo/env" # Or as directed by the Sui installer
+        sui --version
+        move --version
+
+    - name: Build Project (Installs Dependencies)
+      run: |
+        # For Sui projects, 'sui move build' is typically used
+        sui move build --path . # Assuming Move.toml is in the root
+
+    - name: Run Tests
+      run: |
+        # For Sui projects, 'sui move test' is typically used
+        sui move test --path . # Assuming Move.toml is in the root
+
+  deploy_to_testnet: # Renamed for clarity
+    name: Deploy to Testnet
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' # Example: Deploy only on push to main
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Sui Environment
+      run: |
+        curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y
+        source "$HOME/.cargo/env"
+        # Configure Sui client for testnet if needed, potentially using secrets
+        # Example: sui client switch --env testnet
+        #          sui client new-address ed25519 --alias testnet-deployer (if importing key)
+        #          echo "${{ secrets.TESTNET_DEPLOYER_PRIVATE_KEY }}" | sui client import-private-key --alias testnet-deployer
+
+    - name: Deploy Contracts to Testnet
+      env:
+        # SUI_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }} # Example secret
+        # DEPLOYER_PRIVATE_KEY: ${{ secrets.TESTNET_DEPLOYER_PRIVATE_KEY }} # Example secret
+        # These secrets would be used by your deploy.sh script
+        # Ensure deploy.sh is adapted to use environment variables or a configured Sui client
+      run: |
+        chmod +x ./scripts/deploy.sh
+        ./scripts/deploy.sh
