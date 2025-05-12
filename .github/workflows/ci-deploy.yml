@@ -71,64 +71,65 @@ jobs:
         SUI_DEPLOYER_ALIAS: "testnet-deployer-ci" # Alias for the imported key
       run: |
         set -e # Exit immediately if a command exits with a non-zero status
+        set -x # Echo each command before executing (for debugging)
+
         echo "Setting up Sui client for Testnet deployment..."
         # Ensure the .sui config directory exists
         mkdir -p $HOME/.sui/sui_config
 
         # Configure client to use a specific RPC endpoint for testnet if provided
-        # Otherwise, it will use the default configured for 'testnet' or the active env.
         if [ -n "$SUI_TESTNET_RPC_URL" ]; then
           sui client new-env --alias ci-testnet --rpc "$SUI_TESTNET_RPC_URL"
           sui client switch --env ci-testnet
           echo "Switched to ci-testnet environment with RPC: $SUI_TESTNET_RPC_URL"
         else
-          # Attempt to switch to a default testnet environment if RPC URL not provided
-          # This assumes a 'testnet' env is already known or can be defaulted by 'sui client'
           sui client switch --env testnet || echo "Warning: Failed to switch to default 'testnet' env. Using active env."
         fi
 
         echo "Importing private key..."
-        # Note: The SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret should contain the base64 encoding
-        # of the raw private key bytes (e.g., for ed25519, this is typically 32 bytes).
-        # It should NOT be a mnemonic phrase for this command.
-        if [ -n "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" ]; then
-          # Attempt to remove the alias first if it exists, to prevent import failure
-          sui client remove-alias "$SUI_DEPLOYER_ALIAS" || echo "Alias $SUI_DEPLOYER_ALIAS did not exist, proceeding with import."
-
-          echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | sui client import-private-key --alias "$SUI_DEPLOYER_ALIAS"
-          sui client switch --address "$SUI_DEPLOYER_ALIAS" # Set the imported key as active address
-          echo "Switched active address to $SUI_DEPLOYER_ALIAS"
-        else
+        # Ensure the SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret is set
+        if [ -z "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" ]; then
           echo "Error: SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret not set."
           exit 1
         fi
+
+        # Attempt to remove the alias first if it exists, to prevent import failure
+        sui client remove-alias "$SUI_DEPLOYER_ALIAS" || echo "Alias $SUI_DEPLOYER_ALIAS did not exist or could not be removed, proceeding with import attempt."
+
+        # Decode the key
+        DECODED_KEY_HEX=$(echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | xxd -p -c 200)
+        if [ -z "$DECODED_KEY_HEX" ]; then
+           echo "Error: Decoding private key from base64 failed or resulted in empty key."
+           exit 1
+        fi
+        echo "Private key decoded (hex representation will be used for import if sui client supports it, otherwise original pipe)."
+
+        # Import the key.
+        # The private key should be the raw key bytes (e.g., 32 bytes for ed25519), base64 encoded.
+        # It should NOT be a mnemonic phrase.
+        echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | sui client import-private-key --alias "$SUI_DEPLOYER_ALIAS"
+
+        sui client switch --address "$SUI_DEPLOYER_ALIAS" # Set the imported key as active address
+        echo "Switched active address to $SUI_DEPLOYER_ALIAS"
 
         echo "Verifying client configuration..."
         sui client active-env
         sui client active-address
         sui client gas --json # Verify gas objects for the active address
         echo "Sui client setup complete."
+        set +x # Disable verbose output
       shell: bash
 
     - name: Deploy Contracts to Testnet
       env:
-        # These environment variables are made available to the deploy.sh script.
-        # The deploy.sh script would need to be written to utilize them if it needs
-        # to override the active client configuration or requires them for other purposes.
-        # For example, it could use SUI_TARGET_RPC_URL to pass --rpc-url to sui client commands.
-        SUI_TARGET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }} # Making RPC URL available to deploy.sh
-        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }} # The alias of the active address
-        SUI_GAS_COIN_ID_FOR_SCRIPT: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }} # Specific gas coin for publish
-        # Add any other environment variables your deploy.sh might need
+        SUI_TARGET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
+        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }}
+        SUI_GAS_COIN_ID_FOR_SCRIPT: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }}
       run: |
         chmod +x ./scripts/deploy.sh
-        # The deploy.sh script should be written to use the configured Sui client environment
-        # (active network, active address, and its gas objects) by default.
-        # It can optionally use the environment variables above for more explicit control if designed to do so.
-        # For instance, deploy.sh could check if SUI_GAS_COIN_ID_FOR_SCRIPT is set and use it with the --gas argument.
         echo "Executing deploy.sh script..."
-        echo "RPC URL for script (if used): $SUI_TARGET_RPC_URL"
-        echo "Deployer Alias for script (if used): $SUI_DEPLOYER_ADDRESS_FOR_SCRIPT"
-        echo "Gas Coin ID for script (if used): $SUI_GAS_COIN_ID_FOR_SCRIPT"
+        echo "RPC URL for script (if used by deploy.sh): $SUI_TARGET_RPC_URL"
+        echo "Deployer Alias for script (if used by deploy.sh): $SUI_DEPLOYER_ADDRESS_FOR_SCRIPT"
+        echo "Gas Coin ID for script (if used by deploy.sh): $SUI_GAS_COIN_ID_FOR_SCRIPT"
         ./scripts/deploy.sh
       shell: bash
