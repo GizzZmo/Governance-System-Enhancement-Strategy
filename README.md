@@ -10,6 +10,7 @@ A robust blockchain governance framework with hybrid voting, treasury management
 - **X Integration**: Community discussions linked to proposals.
 
 - Component Diagram: https://www.mermaidchart.com/app/projects/77c83721-146e-4ed3-a958-1f9c105480cb/diagrams/f1540a05-3977-4f68-99b4-dddbc0e717e9/version/v0.1/edit
+- Sequence Diagram: https://www.mermaidchart.com/app/projects/77c83721-146e-4ed3-a958-1f9c105480cb/diagrams/7e4b2036-fe39-4d35-a234-b43aa08fb12f/version/v0.1/edit
 
 ## Getting Started
 1. Clone the repo: `git clone https://github.com/yourusername/governance-system`
