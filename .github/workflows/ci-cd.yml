@@ -26,19 +26,33 @@ jobs:
         SUI_INSTALLER_SCRIPT="sui-installer.sh"
 
         echo "Downloading Sui installer from $SUI_INSTALLER_URL..."
-        curl -L "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+        # Use -f to fail fast if the server returns an error (e.g., 404)
+        curl -fL "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+        CURL_EXIT_CODE=$?
+        if [ $CURL_EXIT_CODE -ne 0 ]; then
+          echo "Error: curl failed to download Sui installer script with exit code $CURL_EXIT_CODE."
+          # Attempt to cat the downloaded file if it exists, it might contain an error message from server
+          if [ -f "$SUI_INSTALLER_SCRIPT" ]; then
+            echo "Content of (potentially failed) download:"
+            cat "$SUI_INSTALLER_SCRIPT"
+          fi
+          exit $CURL_EXIT_CODE
+        fi
 
-        if [ ! -f "$SUI_INSTALLER_SCRIPT" ]; then
-          echo "Error: Failed to download Sui installer script."
+        if [ ! -s "$SUI_INSTALLER_SCRIPT" ]; then # Check if file exists and is not empty
+          echo "Error: Failed to download Sui installer script or downloaded file is empty."
           exit 1
         fi
+
+        echo "First 5 lines of downloaded installer script:"
+        head -n 5 "$SUI_INSTALLER_SCRIPT"
+        echo "-------------------------------------------"
 
         echo "Making installer script executable..."
         chmod +x "$SUI_INSTALLER_SCRIPT"
 
         echo "Running Sui installer script..."
         # The '-t' flag installs the toolchain only, '-y' enables non-interactive mode.
-        # Always refer to official Sui documentation for the latest recommended installation method.
         ./"$SUI_INSTALLER_SCRIPT" -y -t
 
         INSTALL_EXIT_CODE=$?
@@ -48,7 +62,6 @@ jobs:
         fi
 
         # Add Sui to PATH for subsequent steps in this job.
-        # $HOME/.sui/bin is the typical location.
         echo "Adding $HOME/.sui/bin to GITHUB_PATH"
         echo "$HOME/.sui/bin" >> $GITHUB_PATH
 
@@ -63,14 +76,11 @@ jobs:
 
     - name: Build Project (Also Fetches Dependencies)
       run: |
-        # 'sui move build' compiles the Move package defined by Move.toml in the current directory.
-        # It will also fetch dependencies if they are not already present.
         sui move build --path .
       shell: bash
 
     - name: Run Tests
       run: |
-        # 'sui move test' compiles and runs tests defined in the package.
         sui move test --path .
       shell: bash
 
@@ -90,30 +100,36 @@ jobs:
         set -x
         SUI_INSTALLER_URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh"
         SUI_INSTALLER_SCRIPT="sui-installer.sh"
-        curl -L "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
-        if [ ! -f "$SUI_INSTALLER_SCRIPT" ]; then exit 1; fi
+        curl -fL "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+        CURL_EXIT_CODE=$?
+        if [ $CURL_EXIT_CODE -ne 0 ]; then
+          echo "Error: curl failed to download Sui installer script with exit code $CURL_EXIT_CODE."
+          if [ -f "$SUI_INSTALLER_SCRIPT" ]; then cat "$SUI_INSTALLER_SCRIPT"; fi
+          exit $CURL_EXIT_CODE
+        fi
+        if [ ! -s "$SUI_INSTALLER_SCRIPT" ]; then echo "Error: Installer script empty."; exit 1; fi
+        echo "Head of installer:"
+        head -n 5 "$SUI_INSTALLER_SCRIPT"
         chmod +x "$SUI_INSTALLER_SCRIPT"
         ./"$SUI_INSTALLER_SCRIPT" -y -t
         INSTALL_EXIT_CODE=$?
-        if [ $INSTALL_EXIT_CODE -ne 0 ]; then exit $INSTALL_EXIT_CODE; fi
+        if [ $INSTALL_EXIT_CODE -ne 0 ]; then echo "Installer script failed."; exit $INSTALL_EXIT_CODE; fi
         echo "$HOME/.sui/bin" >> $GITHUB_PATH
         set +x
       shell: bash
 
     - name: Configure Sui Client for Deployment
       env:
-        SUI_TESTNET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }} # Optional: Specific RPC URL for testnet
-        SUI_DEPLOYER_PRIVATE_KEY_BASE64: ${{ secrets.SUI_DEPLOYER_PRIVATE_KEY_BASE64 }} # Deployer's private key (base64 encoded)
-        SUI_DEPLOYER_ALIAS: "testnet-deployer-ci" # Alias for the imported key
+        SUI_TESTNET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
+        SUI_DEPLOYER_PRIVATE_KEY_BASE64: ${{ secrets.SUI_DEPLOYER_PRIVATE_KEY_BASE64 }}
+        SUI_DEPLOYER_ALIAS: "testnet-deployer-ci"
       run: |
-        set -e # Exit immediately if a command exits with a non-zero status
-        set -x # Echo each command before executing (for debugging)
+        set -e 
+        set -x 
 
         echo "Setting up Sui client for Testnet deployment..."
-        # Ensure the .sui config directory exists
         mkdir -p $HOME/.sui/sui_config
 
-        # Configure client to use a specific RPC endpoint for testnet if provided
         if [ -n "$SUI_TESTNET_RPC_URL" ]; then
           sui client new-env --alias ci-testnet --rpc "$SUI_TESTNET_RPC_URL"
           sui client switch --env ci-testnet
@@ -123,49 +139,41 @@ jobs:
         fi
 
         echo "Importing private key..."
-        # Ensure the SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret is set
         if [ -z "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" ]; then
           echo "Error: SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret not set."
           exit 1
         fi
 
-        # Attempt to remove the alias first if it exists, to prevent import failure
-        sui client remove-alias "$SUI_DEPLOYER_ALIAS" || echo "Alias $SUI_DEPLOYER_ALIAS did not exist or could not be removed, proceeding with import attempt."
+        sui client remove-alias "$SUI_DEPLOYER_ALIAS" || echo "Alias $SUI_DEPLOYER_ALIAS did not exist or could not be removed."
 
-        # Decode the key (for verification, not directly used in import pipe if original pipe is preferred)
         DECODED_KEY_HEX=$(echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | xxd -p -c 200)
         if [ -z "$DECODED_KEY_HEX" ]; then
-           echo "Error: Decoding private key from base64 failed or resulted in empty key."
-           # exit 1 # Potentially too strict if the pipe to sui client import works
+           echo "Warning: Decoding private key from base64 resulted in empty or non-hex key for logging."
         fi
         echo "Private key decoded (hex representation for logging/debug: $DECODED_KEY_HEX)."
 
-        # Import the key.
-        # The private key should be the raw key bytes (e.g., 32 bytes for ed25519), base64 encoded.
-        # It should NOT be a mnemonic phrase.
         echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | sui client import-private-key --alias "$SUI_DEPLOYER_ALIAS"
 
-        sui client switch --address "$SUI_DEPLOYER_ALIAS" # Set the imported key as active address
+        sui client switch --address "$SUI_DEPLOYER_ALIAS" 
         echo "Switched active address to $SUI_DEPLOYER_ALIAS"
 
         echo "Verifying client configuration..."
         sui client active-env
         sui client active-address
-        sui client gas --json # Verify gas objects for the active address
+        sui client gas --json 
         echo "Sui client setup complete."
-        set +x # Disable verbose output
+        set +x 
       shell: bash
 
     - name: Deploy Contracts to Testnet
       env:
         SUI_TARGET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
-        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }} # This makes the alias available
+        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }} 
         SUI_GAS_COIN_ID_FOR_SCRIPT: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }}
       run: |
         chmod +x ./scripts/deploy.sh
         echo "Executing deploy.sh script..."
         echo "RPC URL for script (if used by deploy.sh): $SUI_TARGET_RPC_URL"
-        # The deploy.sh script should ideally use `sui client active-address` or be passed the alias/address
         echo "Deployer Alias for script (if used by deploy.sh): $SUI_DEPLOYER_ADDRESS_FOR_SCRIPT"
         echo "Gas Coin ID for script (if used by deploy.sh): $SUI_GAS_COIN_ID_FOR_SCRIPT"
         ./scripts/deploy.sh
