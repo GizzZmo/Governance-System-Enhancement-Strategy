@@ -1,22 +1,20 @@
 // File: sources/governance.move
 // Manages proposal submission, voting, and basic execution checks.
-// Updated with time-weighted voting bonus.
-
-// Placeholder for the actual package name, will be defined in Move.toml
-module hybrid_governance::governance {
-    use std::signer;
+module hybrid_governance_pkg::governance {
     use std::string::{Self, String};
-    use std::option::{Self, Option};
+    use std::option::{Self, Option, some, none, is_some, destroy_some};
     use std::vector;
-    use sui::clock::{Self, Clock}; // Import Clock for time-based calculations
-    use sui::object::{Self, ID};
-    use sui::tx_context::{Self, TxContext};
+    use sui::clock::{Self, Clock};
+    use sui::object::{Self, ID, UID, new, uid_to_inner};
+    use sui::tx_context::{Self, TxContext, sender};
     use sui::transfer;
     use sui::event;
 
-    // Import necessary types from other modules (assuming they exist)
-    // These imports need the correct package ID after deployment
-    use hybrid_governance::delegation_staking::{Self, StakedSui, GovernanceSystemState};
+    // Import necessary types from other modules within the same package
+    // The `hybrid_governance_pkg` named address from Move.toml will resolve to the package's ID after deployment.
+    use hybrid_governance_pkg::delegation_staking::{Self, StakedSui, GovernanceSystemState, AdminCap as StakingAdminCap};
+    use hybrid_governance_pkg::treasury::{Self, TreasuryChest, TreasuryAccessCap, TreasuryAdminCap};
+    use hybrid_governance_pkg::proposal_handler; // Import the module itself for its types like ProposalExecutionCap
 
     // === Constants ===
     const MAX_TIME_BONUS: u128 = 5; // Maximum bonus points for voting early
@@ -24,33 +22,31 @@ module hybrid_governance::governance {
 
     // === Structs ===
 
-    /// Represents a governance proposal.
+    /// Represents a governance proposal. This object is shared after creation.
     struct Proposal has key, store {
-        id: ID, // Use the object's ID as the unique identifier
-        // proposal_internal_id: u64, // Optional internal counter if needed
+        id: ID, // The unique ID of this Proposal object
         creator: address,
         description: String,
         proposal_type: u8, // 0: General, 1: Minor Param, 2: Critical Param/Vetoable, 3: Funding, 4: Emergency
         // --- Voting State ---
         votes_for: u128,
         votes_against: u128,
-        veto_votes: u128, // Only applicable for proposal_type == 2
+        veto_votes: u128,
         // --- Quorum ---
-        quorum_threshold_percentage: u8, // e.g., 10 for 10%, 30 for 30%
-        total_stake_at_creation: u128, // Total stake when proposal was created, for quorum calculation
+        quorum_threshold_percentage: u8,
+        total_stake_at_creation: u128, // Total system stake when proposal was created
         // --- Timing ---
-        start_time_ms: u64, // Timestamp (milliseconds) when voting begins
-        end_time_ms: u64, // Timestamp (milliseconds) when voting ends
-        voting_duration_ms: u64, // Store the duration used for time bonus calculation
+        start_time_ms: u64,
+        end_time_ms: u64,
+        voting_duration_ms: u64,
         // --- Execution ---
         executed: bool,
-        // --- Proposal Specific Data (Example for Funding) ---
-        // These could be stored directly or parsed from description/metadata
+        // --- Proposal Specific Data ---
         funding_amount: Option<u64>,
         funding_recipient: Option<address>,
-        // Add fields for parameter changes if needed, or parse from description
-        // param_name: Option<String>,
-        // param_new_value: Option<vector<u8>>,
+        param_target_module: Option<String>, // e.g., "staking", "treasury"
+        param_name: Option<String>,          // e.g., "min_validator_stake"
+        param_new_value_bcs: Option<vector<u8>>, // BCS serialized new value
     }
 
     // === Errors ===
@@ -64,13 +60,15 @@ module hybrid_governance::governance {
     const E_VOTING_PERIOD_ALREADY_ENDED: u64 = 8;
     const E_VOTING_PERIOD_NOT_STARTED: u64 = 9;
     const E_INVALID_VOTING_DURATION: u64 = 10;
-    const E_ARITHMETIC_OVERFLOW: u64 = 11;
+    const E_ARITHMETIC_OVERFLOW: u64 = 11; // For math operations
+    const E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE: u64 = 12;
 
     // === Events ===
     struct ProposalCreated has copy, drop {
         proposal_id: ID,
         creator: address,
         proposal_type: u8,
+        description: String, // Include description in event
         quorum_percentage: u8,
         total_stake_at_creation: u128,
         end_time_ms: u64,
@@ -79,6 +77,7 @@ module hybrid_governance::governance {
     struct VoteCast has copy, drop {
         proposal_id: ID,
         voter: address,
+        staked_sui_object_id: ID, // ID of the StakedSui object used
         stake_used: u128,
         base_quadratic_votes: u128,
         time_bonus: u128,
@@ -90,37 +89,49 @@ module hybrid_governance::governance {
 
     struct ProposalExecuted has copy, drop {
         proposal_id: ID,
+        executed_by: address, // Address that called execute_proposal
     }
 
+    // === Public Entry Functions ===
 
-    // === Public Functions ===
-
+    /// Submits a new governance proposal.
     public entry fun submit_proposal(
-        // --- Proposal Details ---
-        description: vector<u8>,
+        description_vec: vector<u8>,
         proposal_type: u8,
-        // Optional fields based on type
-        funding_amount: Option<u64>,
-        funding_recipient: Option<address>,
-        // --- Context & Dependencies ---
-        system_state: &GovernanceSystemState, // To get total stake for quorum
-        clock: &Clock, // To get current time
+        // Optional fields for specific proposal types
+        funding_amount_opt: Option<u64>,
+        funding_recipient_opt: Option<address>,
+        param_target_module_opt: Option<vector<u8>>, // String as vector<u8>
+        param_name_opt: Option<vector<u8>>,          // String as vector<u8>
+        param_new_value_bcs_opt: Option<vector<u8>>,
+        // System objects
+        system_state: &GovernanceSystemState,
+        clock: &Clock,
         ctx: &TxContext
     ) {
-        let creator = tx_context::sender(ctx);
+        let creator_addr = sender(ctx);
         let current_time_ms = clock::timestamp_ms(clock);
         let voting_duration_ms = determine_voting_duration(proposal_type);
-        let end_time_ms = current_time_ms + voting_duration_ms;
+        let end_time_ms = current_time_ms + voting_duration_ms; // Potential overflow if duration is massive; assume reasonable.
 
         let quorum_percentage = determine_quorum_percentage(proposal_type);
-        let total_stake = delegation_staking::get_total_system_stake(system_state) as u128; // Fetch total stake
+        let total_stake = delegation_staking::get_total_system_stake(system_state) as u128;
 
-        let proposal_id = object::new(ctx); // Use the new object's UID/ID
+        // Validate required fields based on proposal_type
+        if (proposal_type == 3) { // Funding
+            assert!(is_some(&funding_amount_opt) && is_some(&funding_recipient_opt), E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE);
+        } else if (proposal_type == 1 || proposal_type == 2) { // Parameter Change
+            assert!(is_some(&param_target_module_opt) && is_some(&param_name_opt) && is_some(&param_new_value_bcs_opt), E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE);
+        };
+
+        let proposal_obj_uid = new(ctx); // UID for the new Proposal object
+        let proposal_id_val = uid_to_inner(&proposal_obj_uid); // Get the actual ID
+        let proposal_description = string::utf8(description_vec);
 
         let new_proposal = Proposal {
-            id: object::uid_to_inner(&proposal_id), // Get the actual ID
-            creator,
-            description: string::utf8(description),
+            id: proposal_id_val,
+            creator: creator_addr,
+            description: proposal_description, // Store the converted String
             proposal_type,
             votes_for: 0,
             votes_against: 0,
@@ -131,74 +142,61 @@ module hybrid_governance::governance {
             end_time_ms: end_time_ms,
             voting_duration_ms: voting_duration_ms,
             executed: false,
-            funding_amount,
-            funding_recipient,
+            funding_amount: funding_amount_opt,
+            funding_recipient: funding_recipient_opt,
+            // Convert vector<u8> to String for storage if present
+            param_target_module: if (is_some(&param_target_module_opt)) { some(string::utf8(destroy_some(param_target_module_opt))) } else { none() },
+            param_name: if (is_some(&param_name_opt)) { some(string::utf8(destroy_some(param_name_opt))) } else { none() },
+            param_new_value_bcs: param_new_value_bcs_opt,
         };
 
         event::emit(ProposalCreated {
-            proposal_id: object::uid_to_inner(&proposal_id),
-            creator,
+            proposal_id: proposal_id_val,
+            creator: creator_addr,
             proposal_type,
+            description: new_proposal.description, // Emit the string description
             quorum_percentage,
             total_stake_at_creation: total_stake,
             end_time_ms,
         });
 
-        // Make the proposal a shared object so anyone can vote on it
+        // Share the proposal object so it can be accessed for voting
         transfer::share_object(new_proposal);
     }
 
+    /// Allows a user to cast a vote on an active proposal using their StakedSui.
     public entry fun hybrid_vote(
-        proposal: &mut Proposal, // Pass the shared Proposal object
-        staked_sui_obj: &StakedSui, // The voter's StakedSui object (proves ownership and gives stake/rep)
-        clock: &Clock, // To get current time for bonus and checks
+        proposal: &mut Proposal,         // The shared Proposal object to vote on
+        staked_sui_obj: &StakedSui,    // The voter's StakedSui object
+        support_vote: bool,            // True for 'yes', false for 'no'
+        is_veto_flag: bool,            // True if this is a veto vote (for specific proposal types)
+        clock: &Clock,
         ctx: &TxContext
     ) {
-        let voter_address = tx_context::sender(ctx);
+        let voter_address = sender(ctx);
         let current_time_ms = clock::timestamp_ms(clock);
 
-        // --- Time Checks ---
         assert!(current_time_ms >= proposal.start_time_ms, E_VOTING_PERIOD_NOT_STARTED);
         assert!(current_time_ms < proposal.end_time_ms, E_VOTING_PERIOD_ALREADY_ENDED);
 
-        // --- Fetch voter's stake and reputation ---
-        // Stake amount comes directly from the StakedSui object passed in.
-        // The amount used for voting is the full amount staked in that object.
         let stake_amount = delegation_staking::get_staked_sui_amount(staked_sui_obj) as u128;
         let reputation = delegation_staking::get_staked_sui_reputation(staked_sui_obj);
-        // In Sui, passing &StakedSui implicitly checks ownership by the sender.
-
         assert!(stake_amount > 0, E_INSUFFICIENT_STAKE_FOR_VOTE);
 
-        // --- Calculate Vote Weights ---
-        // 1. Quadratic voting base
         let base_quadratic_votes = sqrt(stake_amount);
-
-        // 2. Time-weighted bonus (linear decay)
         let elapsed_ms = current_time_ms - proposal.start_time_ms;
         let time_bonus = calculate_time_bonus(elapsed_ms, proposal.voting_duration_ms);
+        // Example: reputation of 100 -> 10% bonus, 200 -> 20% bonus. Max 1000 rep for 100% bonus (factor of 2).
+        let reputation_weight_factor = 100 + (reputation / 10); // Results in a percentage factor (e.g., 110 for 110%)
 
-        // 3. Reputation weight factor
-        let reputation_weight_factor = 100 + (reputation / 10); // Example scaling (100 = 100%, 110 = 110%)
-
-        // --- Combine Weights ---
-        // Add time bonus to base, then apply reputation multiplier
         let votes_with_bonus = base_quadratic_votes + time_bonus;
-        let final_weighted_votes = (votes_with_bonus * reputation_weight_factor) / 100; // Need safe math here potentially
+        // Apply reputation factor: (base * factor) / 100
+        let final_weighted_votes = (votes_with_bonus * reputation_weight_factor) / 100;
 
-        // --- Determine Vote Direction (Example: based on sender address modulo 2 for simplicity) ---
-        // In a real UI, the user would specify support/against/veto.
-        // This needs to be passed as an argument. Let's add arguments:
-        // support: bool, is_veto_vote: bool
-        // For now, placeholder logic:
-        let support = (voter_address.least_significant_byte() % 2) == 0; // Placeholder
-        let is_veto_vote = false; // Placeholder - should be an argument
-
-        // --- Apply Vote ---
-        if is_veto_vote {
-            assert!(proposal.proposal_type == 2, E_INVALID_PROPOSAL_TYPE_FOR_VETO);
+        if (is_veto_flag) {
+            assert!(proposal.proposal_type == 2, E_INVALID_PROPOSAL_TYPE_FOR_VETO); // Type 2 is Critical/Vetoable
             proposal.veto_votes = proposal.veto_votes + final_weighted_votes;
-        } else if support {
+        } else if (support_vote) {
             proposal.votes_for = proposal.votes_for + final_weighted_votes;
         } else {
             proposal.votes_against = proposal.votes_against + final_weighted_votes;
@@ -207,94 +205,79 @@ module hybrid_governance::governance {
         event::emit(VoteCast {
             proposal_id: proposal.id,
             voter: voter_address,
+            staked_sui_object_id: object::id(staked_sui_obj),
             stake_used: stake_amount,
             base_quadratic_votes,
             time_bonus,
             reputation_weight_factor,
             final_weighted_votes,
-            support,
-            is_veto: is_veto_vote,
+            support: support_vote,
+            is_veto: is_veto_flag,
         });
-
-        // --- Discussion: Partial Refund ---
-        // The monolithic example included a partial refund: `move_to(voting_address, voter.stake - votes + refund);`
-        // Implementing this in Sui is complex and potentially undesirable:
-        // 1. State Management: `StakedSui` objects represent *staked* tokens. Directly transferring
-        //    part of this balance out as liquid SUI breaks the staking abstraction.
-        // 2. Mechanism: A refund would likely involve minting a new `Coin<SUI>` from a designated
-        //    refund pool or requiring the voter to claim their refund separately. It cannot be
-        //    done by simply adjusting the `StakedSui` balance and using `move_to`.
-        // 3. Incentive Alignment: Does refunding staked tokens align with the goal of encouraging
-        //    long-term participation and commitment represented by staking? It might incentivize
-        //    short-term voting over sustained staking.
-        // Conclusion: Due to complexity and potential misalignment with Sui's model and staking
-        // incentives, the partial refund mechanism is NOT implemented here. Alternative rewards
-        // (like reputation boosts or periodic airdrops based on voting history) might be better.
     }
 
+    /// Executes a passed proposal. Can be called by anyone after the voting period ends.
     public entry fun execute_proposal(
-        proposal: &mut Proposal, // The shared Proposal object
-        system_state: &GovernanceSystemState, // To get current total stake if needed for veto checks
-        clock: &Clock, // To check end time
-        // --- Capabilities & Objects needed for proposal_handler ---
-        exec_cap: &proposal_handler::ProposalExecutionCap, // Capability to call handler
-        treasury_chest: &mut treasury::TreasuryChest,
-        treasury_access_cap: &treasury::TreasuryAccessCap,
-        // Pass other necessary mutable objects like system_state if handler needs them
+        proposal: &mut Proposal,
+        system_state: &mut GovernanceSystemState, // Mutable if handler might change it (e.g., staking params)
+        clock: &Clock,
+        // --- Capabilities needed by proposal_handler ---
+        exec_cap: &proposal_handler::ProposalExecutionCap,
+        treasury_chest: &mut TreasuryChest,
+        treasury_access_cap: &TreasuryAccessCap,
+        treasury_admin_cap: &TreasuryAdminCap,
+        staking_admin_cap: &StakingAdminCap,
         ctx: &TxContext
     ) {
         assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
         let current_time_ms = clock::timestamp_ms(clock);
         assert!(current_time_ms >= proposal.end_time_ms, E_VOTING_PERIOD_NOT_OVER);
 
-        // --- Quorum Check ---
         let total_votes_cast = proposal.votes_for + proposal.votes_against;
-        // Quorum is based on total stake *at proposal creation*
         let quorum_value = (proposal.total_stake_at_creation * (proposal.quorum_threshold_percentage as u128)) / 100;
         assert!(total_votes_cast >= quorum_value, E_QUORUM_NOT_MET);
-
-        // --- Vote Threshold Check ---
         assert!(proposal.votes_for > proposal.votes_against, E_PROPOSAL_REJECTED);
 
-        // --- Veto Check (if applicable) ---
-        if (proposal.proposal_type == 2) {
-            // Define veto_threshold, e.g., 10% of total stake at creation, or 33% of votes_for
-            let veto_threshold = (proposal.total_stake_at_creation * 10) / 100; // Example: 10% of total stake
-            assert!(proposal.veto_votes < veto_threshold, E_PROPOSAL_REJECTED); // Using same error code for simplicity
+        if (proposal.proposal_type == 2) { // Critical/Vetoable
+            // Example veto threshold: 10% of total stake at proposal creation
+            let veto_threshold = (proposal.total_stake_at_creation * 10) / 100;
+            assert!(proposal.veto_votes < veto_threshold, E_PROPOSAL_REJECTED); // Vetoed
         }
 
-        // --- Mark as Executed (Important: Do this *before* calling handler) ---
-        // If handler fails, the state change here persists, preventing re-execution attempts.
-        // This is safer than marking after the handler call.
+        // Mark as executed BEFORE calling the handler to prevent re-entrancy or re-execution on handler failure.
         proposal.executed = true;
 
-        // --- Call the Proposal Handler ---
-        // The handler performs the actual actions based on proposal type and data.
+        // Call the proposal handler to perform specific actions
         proposal_handler::handle_proposal_execution(
             exec_cap,
-            proposal, // Pass proposal data (can be immutable borrow now)
+            proposal, // Pass immutable reference now, as its 'executed' state is set
             treasury_chest,
+            staking_system_state, // Pass mutable system_state
             treasury_access_cap,
-            system_state, // Pass mutable system_state if handler needs to change params
+            treasury_admin_cap,
+            staking_admin_cap,
             ctx
-        ); // If handler aborts, the proposal remains marked executed, but actions didn't complete. Needs careful consideration.
+        );
 
-        event::emit(ProposalExecuted { proposal_id: proposal.id });
+        event::emit(ProposalExecuted {
+            proposal_id: proposal.id,
+            executed_by: sender(ctx),
+        });
     }
 
     // === Helper Functions ===
 
-    // Determines the required quorum percentage based on proposal type.
+    /// Determines the required quorum percentage based on proposal type.
     fun determine_quorum_percentage(proposal_type: u8): u8 {
-        if (proposal_type == 0) { 10 } // General: 10%
-        else if (proposal_type == 1) { 20 } // Minor Param: 20%
-        else if (proposal_type == 2) { 33 } // Critical Param: 33%
-        else if (proposal_type == 3) { 15 } // Funding: 15%
-        else if (proposal_type == 4) { 40 } // Emergency: 40%
+        if (proposal_type == 0) { 10 } // General
+        else if (proposal_type == 1) { 20 } // Minor Parameter Change
+        else if (proposal_type == 2) { 33 } // Critical Parameter Change (Vetoable)
+        else if (proposal_type == 3) { 15 } // Funding Request
+        else if (proposal_type == 4) { 40 } // Emergency
         else { abort(E_INVALID_PROPOSAL_TYPE) }
     }
 
-    // Determines voting duration based on type
+    /// Determines voting duration in milliseconds based on proposal type.
     fun determine_voting_duration(proposal_type: u8): u64 {
         if (proposal_type == 4) { // Emergency
             1 * 24 * 60 * 60 * 1000 // 1 day in ms
@@ -303,21 +286,20 @@ module hybrid_governance::governance {
         }
     }
 
-    // Calculates time bonus (linear decay)
-    // Returns bonus points (0 to MAX_TIME_BONUS)
+    /// Calculates time bonus (linear decay).
     fun calculate_time_bonus(elapsed_ms: u64, total_duration_ms: u64): u128 {
         if (total_duration_ms == 0) { return 0 }; // Avoid division by zero
-
-        // Calculate decay factor: (elapsed / total_duration) * MAX_TIME_BONUS
-        // Use u128 for intermediate calculations to prevent overflow
         let elapsed_u128 = elapsed_ms as u128;
         let total_duration_u128 = total_duration_ms as u128;
         let max_bonus_u128 = MAX_TIME_BONUS;
 
-        // Check for potential overflow before multiplication
-        let numerator = elapsed_u128 * max_bonus_u128;
+        // Ensure elapsed time does not exceed total duration for calculation
+        if (elapsed_u128 >= total_duration_u128) { return 0 }; // No bonus if voted at/after end
 
-        let decay = numerator / total_duration_u128;
+        // decay = (elapsed / total_duration) * MAX_TIME_BONUS
+        // To prevent precision loss with integer division, multiply first:
+        let decay_numerator = elapsed_u128 * max_bonus_u128;
+        let decay = decay_numerator / total_duration_u128;
 
         // Bonus decreases over time: MAX_TIME_BONUS - decay
         if (max_bonus_u128 >= decay) {
@@ -327,27 +309,28 @@ module hybrid_governance::governance {
         }
     }
 
-    // Integer square root (Babylonian method - simplified)
+    /// Integer square root function (Babylonian method).
     fun sqrt(x: u128): u128 {
         if (x == 0) { return 0 };
-        let mut guess = x;
-        let mut delta = 1; // Start with a large delta
-        // Iterate until convergence or max iterations
+        let mut guess = x; // Start with x or x/2 for faster convergence
+        let mut prev_guess = 0;
+        // Iterate until guess converges or a max number of iterations for safety
+        // Sui's compute budget is a consideration.
+        // A loop that checks for convergence is generally fine.
         loop {
-            let next_guess = (guess + x / guess) / 2;
-            if (next_guess >= guess) { // Converged or oscillating
-                // Check if guess+1 is better (needed for integer sqrt)
-                if ((guess + 1) * (guess + 1) <= x) { return guess + 1 };
-                return guess
+            if (guess == 0) { return 0 }; // Avoid division by zero if guess becomes 0
+            prev_guess = guess;
+            guess = (guess + x / guess) / 2;
+            // Check for convergence: if guess is no longer changing or starts increasing
+            if (guess >= prev_guess) {
+                // If (prev_guess)^2 was closer than (guess)^2, use prev_guess
+                // This handles cases where integer division causes oscillation around the true root.
+                // For quadratic voting, exactness is less critical than a good approximation.
+                // The check (guess+1)^2 <= x is for finding the floor of the true sqrt.
+                if (prev_guess * prev_guess <= x) { return prev_guess } else { return guess };
             };
-             // Optimization: check if delta is small enough
-            if (guess - next_guess < delta) {
-                // Check if guess+1 is better
-                if ((next_guess + 1) * (next_guess + 1) <= x) { return next_guess + 1 };
-                return next_guess;
-            };
-            guess = next_guess;
         };
-        guess // Should be unreachable due to loop condition
+        // Fallback, should be unreachable if loop logic is correct
+        // return guess;
     }
 }
