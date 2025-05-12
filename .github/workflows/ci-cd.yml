@@ -19,36 +19,39 @@ jobs:
 
     - name: Install Sui Binaries
       run: |
-        # Fetch the official Sui installer script and execute it
-        # This command downloads and runs the installer, adding sui to the PATH.
-        # The exact URL and script might change; always refer to official Sui documentation.
-        curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y -t # -t for toolchain only, -y for non-interactive
-        # Add Sui to PATH for subsequent steps in this job
+        # Fetch the official Sui installer script and execute it.
+        # This command downloads and runs the installer, adding 'sui' to the PATH.
+        # The '-t' flag installs the toolchain only, '-y' enables non-interactive mode.
+        # Always refer to official Sui documentation for the latest recommended installation method.
+        curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y -t
+        # Add Sui to PATH for subsequent steps in this job.
+        # $HOME/.sui/bin is the typical location.
         echo "$HOME/.sui/bin" >> $GITHUB_PATH
-        # Source cargo env if needed by sui installer (often done by the installer itself)
-        # source "$HOME/.cargo/env" 
       shell: bash
 
     - name: Verify Installation
       run: |
         sui --version
-        move --version
+        move --version # Verify Move CLI is also available (comes with Sui tools)
       shell: bash
 
-    - name: Build Project (Installs Dependencies)
+    - name: Build Project (Also Fetches Dependencies)
       run: |
-        sui move build --path . # Assumes Move.toml is in the root
+        # 'sui move build' compiles the Move package defined by Move.toml in the current directory.
+        # It will also fetch dependencies if they are not already present.
+        sui move build --path .
       shell: bash
 
     - name: Run Tests
       run: |
-        sui move test --path . # Assumes Move.toml is in the root
+        # 'sui move test' compiles and runs tests defined in the package.
+        sui move test --path .
       shell: bash
 
-  deploy_to_testnet: # Renamed for clarity
+  deploy_to_testnet:
     name: Deploy to Testnet
     runs-on: ubuntu-latest
-    needs: build
+    needs: build # Ensures build job completes successfully first
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' # Example: Deploy only on push to main
 
     steps:
@@ -59,37 +62,45 @@ jobs:
       run: |
         curl -L https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh | sh -s -- -y -t
         echo "$HOME/.sui/bin" >> $GITHUB_PATH
-        # source "$HOME/.cargo/env"
       shell: bash
 
-    - name: Configure Sui Client for Deployment (Example)
-      # This step would use secrets to configure the client for the target network
-      # It might involve importing a private key or setting active network/address
+    - name: Configure Sui Client for Deployment
       env:
-        SUI_KEYSTORE_PATH: ${{ secrets.SUI_KEYSTORE_BASE64 }} # Keystore file base64 encoded
-        SUI_NETWORK_CONFIG: ${{ secrets.SUI_NETWORK_CONFIG_YAML }} # client.yaml or network.yaml content
+        # SUI_TESTNET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }} # Example: RPC URL for testnet
+        SUI_DEPLOYER_PRIVATE_KEY_BASE64: ${{ secrets.SUI_DEPLOYER_PRIVATE_KEY_BASE64 }} # Deployer's private key (base64 encoded)
+        SUI_DEPLOYER_ALIAS: "testnet-deployer" # Alias for the imported key
       run: |
-        echo "Setting up Sui client..."
-        # Example: Decode keystore if provided as base64
-        # if [ -n "$SUI_KEYSTORE_PATH" ]; then
-        #   mkdir -p $HOME/.sui/sui_config
-        #   echo "$SUI_KEYSTORE_PATH" | base64 --decode > $HOME/.sui/sui_config/sui.keystore
-        # fi
-        # Example: Write network config if provided
-        # if [ -n "$SUI_NETWORK_CONFIG" ]; then
-        #   mkdir -p $HOME/.sui/sui_config
-        #   echo "$SUI_NETWORK_CONFIG" > $HOME/.sui/sui_config/client.yaml
-        # fi
-        # sui client switch --env testnet # Or use an alias if configured in client.yaml
-        # sui client active-address # Verify the deployer address
+        echo "Setting up Sui client for Testnet deployment..."
+        # Ensure the .sui config directory exists
+        mkdir -p $HOME/.sui/sui_config
+
+        # Example: Configure client to use a specific RPC endpoint for testnet
+        # sui client new-env --alias testnet --rpc $SUI_TESTNET_RPC_URL
+        # sui client switch --env testnet
+
+        # Import the deployer's private key from secrets
+        if [ -n "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" ]; then
+          echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | sui client import-private-key --alias "$SUI_DEPLOYER_ALIAS"
+          sui client switch --address "$SUI_DEPLOYER_ALIAS" # Set the imported key as active
+          echo "Switched active address to $SUI_DEPLOYER_ALIAS"
+        else
+          echo "Error: SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret not set."
+          exit 1
+        fi
+
+        sui client active-address # Verify the deployer address
+        sui client gas --json # Verify gas objects for the active address
       shell: bash
 
     - name: Deploy Contracts to Testnet
       env:
-        # Pass any secrets needed by deploy.sh as environment variables
-        # SUI_DEPLOYER_ADDRESS: ${{ secrets.SUI_DEPLOYER_ADDRESS }}
+        # The deploy.sh script might need specific environment variables,
+        # e.g., for gas payment or if it doesn't use the active client configuration.
         # SUI_GAS_OBJECT_ID: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }}
       run: |
         chmod +x ./scripts/deploy.sh
-        ./scripts/deploy.sh # Ensure deploy.sh uses environment variables or configured Sui client
+        # The deploy.sh script should be written to use the configured Sui client environment
+        # (active network, active address, and its gas objects).
+        # It should specify the gas budget for the publish command.
+        ./scripts/deploy.sh
       shell: bash
