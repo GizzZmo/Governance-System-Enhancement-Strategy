@@ -22,20 +22,17 @@ jobs:
         set -e # Exit immediately if a command exits with a non-zero status
         set -x # Echo each command before executing
 
-        SUI_INSTALLER_URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh"
-        SUI_INSTALLER_SCRIPT="sui-installer.sh"
+        # Use the canonical URL for the Sui installation script from the main branch of the Sui repo
+        SUI_INSTALLER_URL="https://raw.githubusercontent.com/MystenLabs/sui/main/scripts/install.sh"
+        SUI_INSTALLER_SCRIPT="install-sui.sh" # Renamed for clarity
 
         echo "Downloading Sui installer from $SUI_INSTALLER_URL..."
         # Use -f to fail fast if the server returns an error (e.g., 404)
-        curl -fL "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+        # Use -s for silent mode, -S to show errors
+        curl -fsSL "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
         CURL_EXIT_CODE=$?
         if [ $CURL_EXIT_CODE -ne 0 ]; then
           echo "Error: curl failed to download Sui installer script with exit code $CURL_EXIT_CODE."
-          # Attempt to cat the downloaded file if it exists, it might contain an error message from server
-          if [ -f "$SUI_INSTALLER_SCRIPT" ]; then
-            echo "Content of (potentially failed) download:"
-            cat "$SUI_INSTALLER_SCRIPT"
-          fi
           exit $CURL_EXIT_CODE
         fi
 
@@ -52,8 +49,11 @@ jobs:
         chmod +x "$SUI_INSTALLER_SCRIPT"
 
         echo "Running Sui installer script..."
-        # The '-t' flag installs the toolchain only, '-y' enables non-interactive mode.
-        ./"$SUI_INSTALLER_SCRIPT" -y -t
+        # The script itself handles fetching appropriate binaries.
+        # Common flags: --ci (for non-interactive CI environments), --toolchain-only (if you don't need a local network)
+        # Consult the install.sh script or Sui docs for its specific flags.
+        # Using --skip-prompts for non-interactive install.
+        ./"$SUI_INSTALLER_SCRIPT" --skip-prompts --toolchain-only
 
         INSTALL_EXIT_CODE=$?
         if [ $INSTALL_EXIT_CODE -ne 0 ]; then
@@ -62,8 +62,21 @@ jobs:
         fi
 
         # Add Sui to PATH for subsequent steps in this job.
-        echo "Adding $HOME/.sui/bin to GITHUB_PATH"
-        echo "$HOME/.sui/bin" >> $GITHUB_PATH
+        # The install.sh script typically instructs to source a file or add to PATH.
+        # Common location is $HOME/.sui/bin or $HOME/.cargo/bin if installed via cargo by the script.
+        # The install.sh script from Sui repo usually updates .profile or .bashrc.
+        # For CI, explicitly adding to GITHUB_PATH is more reliable.
+        # Assuming the installer places binaries in $HOME/.sui/bin
+        if [ -d "$HOME/.sui/bin" ]; then
+          echo "Adding $HOME/.sui/bin to GITHUB_PATH"
+          echo "$HOME/.sui/bin" >> $GITHUB_PATH
+        elif [ -d "$HOME/.cargo/bin" ]; then # If installer used cargo install internally
+          echo "Adding $HOME/.cargo/bin to GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        else
+          echo "Warning: Sui binary directory not found at expected locations ($HOME/.sui/bin or $HOME/.cargo/bin)."
+          echo "Sui CLI might not be in PATH."
+        fi
 
         set +x
       shell: bash
@@ -71,7 +84,7 @@ jobs:
     - name: Verify Installation
       run: |
         sui --version
-        move --version # Verify Move CLI is also available (comes with Sui tools)
+        move --version 
       shell: bash
 
     - name: Build Project (Also Fetches Dependencies)
@@ -87,8 +100,8 @@ jobs:
   deploy_to_testnet:
     name: Deploy to Testnet
     runs-on: ubuntu-latest
-    needs: build # Ensures build job completes successfully first
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' # Example: Deploy only on push to main
+    needs: build 
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
     - name: Checkout Code
@@ -98,23 +111,24 @@ jobs:
       run: |
         set -e
         set -x
-        SUI_INSTALLER_URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-installer.sh"
-        SUI_INSTALLER_SCRIPT="sui-installer.sh"
-        curl -fL "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
+        SUI_INSTALLER_URL="https://raw.githubusercontent.com/MystenLabs/sui/main/scripts/install.sh"
+        SUI_INSTALLER_SCRIPT="install-sui.sh"
+        curl -fsSL "$SUI_INSTALLER_URL" -o "$SUI_INSTALLER_SCRIPT"
         CURL_EXIT_CODE=$?
         if [ $CURL_EXIT_CODE -ne 0 ]; then
           echo "Error: curl failed to download Sui installer script with exit code $CURL_EXIT_CODE."
-          if [ -f "$SUI_INSTALLER_SCRIPT" ]; then cat "$SUI_INSTALLER_SCRIPT"; fi
           exit $CURL_EXIT_CODE
         fi
         if [ ! -s "$SUI_INSTALLER_SCRIPT" ]; then echo "Error: Installer script empty."; exit 1; fi
         echo "Head of installer:"
         head -n 5 "$SUI_INSTALLER_SCRIPT"
         chmod +x "$SUI_INSTALLER_SCRIPT"
-        ./"$SUI_INSTALLER_SCRIPT" -y -t
+        ./"$SUI_INSTALLER_SCRIPT" --skip-prompts --toolchain-only
         INSTALL_EXIT_CODE=$?
         if [ $INSTALL_EXIT_CODE -ne 0 ]; then echo "Installer script failed."; exit $INSTALL_EXIT_CODE; fi
-        echo "$HOME/.sui/bin" >> $GITHUB_PATH
+        if [ -d "$HOME/.sui/bin" ]; then echo "$HOME/.sui/bin" >> $GITHUB_PATH;
+        elif [ -d "$HOME/.cargo/bin" ]; then echo "$HOME/.cargo/bin" >> $GITHUB_PATH;
+        else echo "Warning: Sui binary directory not found."; fi
         set +x
       shell: bash
 
