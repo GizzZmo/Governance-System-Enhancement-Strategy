@@ -1,315 +1,221 @@
-// File: sources/treasury.move
-// Manages the community treasury, funding proposals, and multi-signature controls.
-module hybrid_governance_pkg::treasury {
-    use std::option::{Self, Option, some, none, is_some, borrow as option_borrow, destroy_some};
+// File: sources/proposal_handler.move
+// Handles the execution logic for different types of governance proposals
+// after they have been approved by the main governance module.
+module hybrid_governance_pkg::proposal_handler {
+    use std::option::{Self, Option, is_some, borrow as option_borrow};
+    use std::string::{Self, String, utf8};
     use std::vector;
-    use sui::coin::{Self, Coin};
-    use sui::balance::{Self, Balance, zero, join, split, value, from_value, destroy_zero};
-    use sui::sui::SUI; // Assuming SUI is the treasury token
-    use sui::object::{Self, ID, UID, new, id as object_id};
+    use std::bcs; // For deserializing parameter values
+
+    use sui::object::{Self, ID, UID, new};
     use sui::transfer;
-    use sui::tx_context::{Self, TxContext, sender}; // Removed unused 'epoch'
-    use sui::table::{Self, Table, add as table_add, borrow as table_borrow, borrow_mut as table_borrow_mut, contains as table_contains, remove as table_remove};
+    use sui::tx_context::{Self, TxContext, sender};
     use sui::event;
+
+    // Import necessary types from other modules within the same package
+    use hybrid_governance_pkg::governance::{Self, Proposal}; // To read proposal details
+    use hybrid_governance_pkg::treasury::{Self, TreasuryChest, TreasuryAccessCap, TreasuryAdminCap};
+    use hybrid_governance_pkg::delegation_staking::{Self, GovernanceSystemState, AdminCap as StakingAdminCap};
 
     // === Structs ===
 
-    /// Capability object for general treasury access (e.g., by governance for funding).
-    /// Transferred to the governance module or proposal_handler.
-    struct TreasuryAccessCap has key, store { id: UID }
-
-    /// Capability object for administrative actions on the treasury (e.g., changing config, managing approvers).
-    /// Transferred to an admin or the governance module.
-    struct TreasuryAdminCap has key, store { id: UID }
-
-    /// The main Treasury object, a shared object holding funds and configuration.
-    struct TreasuryChest has key {
+    /// Capability held by the `governance` module, required to call `handle_proposal_execution`.
+    /// This ensures that proposal execution can only be triggered after successful voting checks.
+    struct ProposalExecutionCap has key, store {
         id: UID,
-        funds: Balance<SUI>,
-        // --- Multi-Sig Configuration & State ---
-        approvers: vector<address>, // List of addresses authorized to approve direct withdrawals
-        min_approvals_required: u64, // Minimum approvals needed for a direct withdrawal proposal
-        max_approvers: u64, // Maximum number of approvers allowed
-        withdrawal_proposals: Table<u64, WithdrawalProposal>, // Tracks pending direct withdrawals
-        next_withdrawal_proposal_id: u64,
-    }
-
-    /// Represents a pending direct withdrawal proposal requiring multi-sig approval.
-    struct WithdrawalProposal has key, store { // Added key for direct object access if needed
-        id: UID, // UID of this WithdrawalProposal object
-        proposal_internal_id: u64, // Sequential ID for easier reference in the Table
-        proposer: address,
-        recipient: address,
-        amount: u64,
-        reason: vector<u8>, // String as vector<u8>
-        approvals_received: vector<address>, // Addresses that have approved this
-        executed: bool,
     }
 
     // === Events ===
-    struct FundsDeposited has copy, drop { depositor: address, amount: u64, new_balance: u64 }
-    struct FundsWithdrawnByGovernance has copy, drop { proposal_id: ID, recipient: address, amount: u64, remaining_balance: u64 }
-    struct DirectWithdrawalProposed has copy, drop { withdrawal_proposal_id: u64, proposer: address, recipient: address, amount: u64, reason: vector<u8> }
-    struct DirectWithdrawalApproved has copy, drop { withdrawal_proposal_id: u64, approver: address, current_approvals: u64, required_approvals: u64 }
-    struct DirectWithdrawalExecuted has copy, drop { withdrawal_proposal_id: u64, executor: address, recipient: address, amount: u64, remaining_balance: u64 }
-    struct ApproverAdded has copy, drop { new_approver: address, added_by: address, current_approver_count: u64 }
-    struct ApproverRemoved has copy, drop { removed_approver: address, removed_by: address, current_approver_count: u64 }
-    struct TreasuryConfigUpdated has copy, drop { updated_by: address, new_min_approvals: u64, new_max_approvers: u64 }
+    struct FundingProposalExecuted has copy, drop { proposal_id: ID, recipient: address, amount: u64 }
+    struct ParameterChangeExecuted has copy, drop { proposal_id: ID, target_module: String, parameter_name: String, new_value_bcs: vector<u8> }
+    struct GeneralActionExecuted has copy, drop { proposal_id: ID, action_description: String } // Changed to String
+    struct EmergencyActionExecuted has copy, drop { proposal_id: ID, action_description: String } // Changed to String
 
     // === Errors ===
-    const E_INSUFFICIENT_FUNDS_IN_TREASURY: u64 = 201;
-    const E_NOT_AN_APPROVER: u64 = 202;
-    const E_ALREADY_APPROVED: u64 = 203;
-    const E_WITHDRAWAL_PROPOSAL_NOT_FOUND: u64 = 204;
-    const E_NOT_ENOUGH_APPROVALS: u64 = 205;
-    const E_PROPOSAL_ALREADY_EXECUTED: u64 = 206;
-    const E_AMOUNT_MUST_BE_POSITIVE: u64 = 208;
-    const E_APPROVER_LIST_FULL: u64 = 209;
-    const E_APPROVER_ALREADY_EXISTS: u64 = 210;
-    const E_CANNOT_REMOVE_NON_EXISTENT_APPROVER: u64 = 211;
-    const E_UNAUTHORIZED_ADMIN_ACTION: u64 = 212;
-    const E_INVALID_CONFIG_VALUE: u64 = 213;
-    const E_PROPOSER_MUST_BE_APPROVER: u64 = 214; // For direct withdrawal proposals
-    const E_REASON_TOO_LONG: u64 = 215; // Example for input validation
+    // const E_INVALID_EXECUTION_CAPABILITY: u64 = 301; // Implicitly checked by type system
+    const E_UNSUPPORTED_PROPOSAL_TYPE: u64 = 302;
+    const E_MISSING_FUNDING_PARAMETERS: u64 = 303;
+    const E_MISSING_PARAMETER_CHANGE_DATA: u64 = 304;
+    const E_TREASURY_INTERACTION_FAILED: u64 = 305; // Generic error, specific errors in treasury module
+    const E_STAKING_INTERACTION_FAILED: u64 = 306;  // Generic error, specific errors in staking module
+    const E_INVALID_TARGET_MODULE_OR_PARAM_NAME: u64 = 307;
+    const E_PARAMETER_DESERIALIZATION_FAILED: u64 = 309;
+    const E_ACTION_FAILED_PLACEHOLDER: u64 = 310; // For actions not yet fully implemented
 
     // === Init ===
-    /// Initializes the Treasury: creates TreasuryChest, TreasuryAccessCap, and TreasuryAdminCap.
+    /// Initializes the module, creating the ProposalExecutionCap.
+    /// This capability should be transferred to the `governance` module or its admin.
     fun init(ctx: &mut TxContext) {
-        transfer::share_object(TreasuryChest {
-            id: object::new(ctx),
-            funds: balance::zero(),
-            approvers: vector::empty<address>(), // Start with no approvers; add via admin function
-            min_approvals_required: 1, // Default, sensible if only 1 approver added initially
-            max_approvers: 5,          // Default max approvers
-            withdrawal_proposals: table::new(ctx),
-            next_withdrawal_proposal_id: 0,
-        });
-
-        // TreasuryAccessCap is for governance-controlled withdrawals (via proposals)
-        transfer::transfer(TreasuryAccessCap { id: object::new(ctx) }, sender(ctx));
-        // TreasuryAdminCap is for administrative actions (config, approver list)
-        transfer::transfer(TreasuryAdminCap { id: object::new(ctx) }, sender(ctx));
+        transfer::transfer(ProposalExecutionCap { id: new(ctx) }, sender(ctx));
     }
 
-    // === Public Entry Functions ===
+    // === Public Entry Function (Called by Governance Module) ===
 
-    /// Deposits SUI into the TreasuryChest. Anyone can call this.
-    public entry fun deposit_funds(
+    /// The main entry point called by `governance::execute_proposal`.
+    public entry fun handle_proposal_execution(
+        _exec_cap: &ProposalExecutionCap, // Authorization from governance module
+        proposal: &Proposal,              // Immutable reference to the approved Proposal object
+        // --- Mutable objects for state changes & Capabilities for restricted actions ---
         treasury_chest: &mut TreasuryChest,
-        coins_to_deposit: Coin<SUI>,
+        staking_system_state: &mut GovernanceSystemState,
+        treasury_access_cap: &TreasuryAccessCap, // For funding withdrawals
+        treasury_admin_cap: &TreasuryAdminCap,   // For treasury config changes
+        staking_admin_cap: &StakingAdminCap,     // For staking config changes
         ctx: &mut TxContext
     ) {
-        let amount = coin::value(&coins_to_deposit);
-        assert!(amount > 0, E_AMOUNT_MUST_BE_POSITIVE);
-        balance::join(&mut treasury_chest.funds, coin::into_balance(coins_to_deposit));
+        let proposal_type = proposal.proposal_type;
 
-        event::emit(FundsDeposited {
-            depositor: sender(ctx),
-            amount,
-            new_balance: balance::value(&treasury_chest.funds),
-        });
-    }
-
-    /// Called by `proposal_handler` after a governance funding proposal is approved.
-    /// Requires `TreasuryAccessCap`.
-    public entry fun process_approved_funding_by_governance(
-        treasury_chest: &mut TreasuryChest,
-        _access_cap: &TreasuryAccessCap, // Proof of authorization from governance
-        proposal_id_ref: ID, // ID of the original governance proposal for event logging
-        amount_to_withdraw: u64,
-        recipient: address,
-        ctx: &mut TxContext
-    ) {
-        assert!(amount_to_withdraw > 0, E_AMOUNT_MUST_BE_POSITIVE);
-        assert!(balance::value(&treasury_chest.funds) >= amount_to_withdraw, E_INSUFFICIENT_FUNDS_IN_TREASURY);
-
-        let withdrawn_balance = balance::split(&mut treasury_chest.funds, amount_to_withdraw);
-        let withdrawn_coins = coin::from_balance(withdrawn_balance, ctx);
-        transfer::public_transfer(withdrawn_coins, recipient);
-
-        event::emit(FundsWithdrawnByGovernance {
-            proposal_id: proposal_id_ref,
-            recipient,
-            amount: amount_to_withdraw,
-            remaining_balance: balance::value(&treasury_chest.funds),
-        });
-    }
-
-    // --- On-Chain Multi-Sig Direct Withdrawal Functions ---
-
-    /// Proposes a direct withdrawal from treasury, initiated by an approver.
-    public entry fun propose_direct_withdrawal(
-        treasury_chest: &mut TreasuryChest,
-        recipient: address,
-        amount: u64,
-        reason: vector<u8>, // Max length check example
-        ctx: &mut TxContext
-    ) {
-        let proposer = sender(ctx);
-        assert!(vector::contains(&treasury_chest.approvers, &proposer), E_PROPOSER_MUST_BE_APPROVER);
-        assert!(amount > 0, E_AMOUNT_MUST_BE_POSITIVE);
-        assert!(vector::length(&reason) <= 256, E_REASON_TOO_LONG); // Example validation
-
-        let proposal_internal_id = treasury_chest.next_withdrawal_proposal_id;
-        treasury_chest.next_withdrawal_proposal_id = proposal_internal_id + 1;
-
-        let withdrawal_proposal_uid = object::new(ctx);
-        let withdrawal_proposal = WithdrawalProposal {
-            id: withdrawal_proposal_uid,
-            proposal_internal_id,
-            proposer,
-            recipient,
-            amount,
-            reason, // Store directly
-            approvals_received: vector::singleton(proposer), // Proposer automatically approves
-            executed: false,
+        if (proposal_type == 0) { // General Proposal
+            execute_general_action(proposal, ctx);
+        } else if (proposal_type == 1 || proposal_type == 2) { // Minor or Critical Parameter Change
+            execute_parameter_change(
+                proposal,
+                staking_system_state,
+                treasury_chest,
+                staking_admin_cap,
+                treasury_admin_cap,
+                ctx
+            );
+        } else if (proposal_type == 3) { // Funding Request
+            execute_funding_request(
+                proposal,
+                treasury_chest,
+                treasury_access_cap, // Only needs access cap for funding
+                ctx
+            );
+        } else if (proposal_type == 4) { // Emergency Action
+            execute_emergency_action(proposal, staking_system_state, treasury_chest, staking_admin_cap, treasury_admin_cap, ctx);
+        } else {
+            abort(E_UNSUPPORTED_PROPOSAL_TYPE)
         };
-        // This proposal object itself is not shared; it's stored in the table.
-        table_add(&mut treasury_chest.withdrawal_proposals, proposal_internal_id, withdrawal_proposal);
-
-        event::emit(DirectWithdrawalProposed {
-            withdrawal_proposal_id: proposal_internal_id,
-            proposer, recipient, amount, reason // Emit the reason
-        });
-        event::emit(DirectWithdrawalApproved { // Proposer's auto-approval
-            withdrawal_proposal_id: proposal_internal_id, approver: proposer, current_approvals: 1,
-            required_approvals: treasury_chest.min_approvals_required,
-        });
     }
 
-    /// Approves a pending direct withdrawal proposal. Called by an approver.
-    public entry fun approve_direct_withdrawal(
+    // === Internal Execution Functions ===
+
+    /// Executes a funding request by calling the treasury module.
+    fun execute_funding_request(
+        proposal: &Proposal,
         treasury_chest: &mut TreasuryChest,
-        withdrawal_proposal_id: u64,
+        treasury_access_cap: &TreasuryAccessCap,
         ctx: &mut TxContext
     ) {
-        let approver = sender(ctx);
-        assert!(vector::contains(&treasury_chest.approvers, &approver), E_NOT_AN_APPROVER);
-        assert!(table_contains(&treasury_chest.withdrawal_proposals, withdrawal_proposal_id), E_WITHDRAWAL_PROPOSAL_NOT_FOUND);
+        assert!(is_some(&proposal.funding_amount) && is_some(&proposal.funding_recipient), E_MISSING_FUNDING_PARAMETERS);
+        let amount = *option_borrow(&proposal.funding_amount);
+        let recipient = *option_borrow(&proposal.funding_recipient);
 
-        let proposal = table_borrow_mut(&mut treasury_chest.withdrawal_proposals, withdrawal_proposal_id);
-        assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
-        assert!(!vector::contains(&proposal.approvals_received, &approver), E_ALREADY_APPROVED);
+        // Call the treasury module function that requires the TreasuryAccessCap
+        treasury::process_approved_funding_by_governance(
+            treasury_chest,
+            treasury_access_cap,
+            proposal.id, // Pass proposal ID for event logging
+            amount,
+            recipient,
+            ctx
+        ); // Errors from treasury will abort
 
-        vector::push_back(&mut proposal.approvals_received, approver);
-        event::emit(DirectWithdrawalApproved {
-            withdrawal_proposal_id, approver, current_approvals: vector::length(&proposal.approvals_received),
-            required_approvals: treasury_chest.min_approvals_required,
-        });
+        // Event already emitted by treasury::process_approved_funding_by_governance
+        // No need to emit FundingProposalExecuted here if treasury does it well.
+        // However, if specific handler event is desired:
+        // event::emit(FundingProposalExecuted { proposal_id: proposal.id, recipient, amount });
     }
 
-    /// Executes a direct withdrawal proposal that has received sufficient approvals.
-    public entry fun execute_direct_withdrawal(
+    /// Executes a parameter change by calling admin functions in target modules.
+    fun execute_parameter_change(
+        proposal: &Proposal,
+        staking_system_state: &mut GovernanceSystemState,
         treasury_chest: &mut TreasuryChest,
-        withdrawal_proposal_id: u64,
+        staking_admin_cap: &StakingAdminCap,
+        treasury_admin_cap: &TreasuryAdminCap,
         ctx: &mut TxContext
     ) {
-        assert!(table_contains(&treasury_chest.withdrawal_proposals, withdrawal_proposal_id), E_WITHDRAWAL_PROPOSAL_NOT_FOUND);
-        // Borrow immutably first for checks
-        let proposal_ref = table_borrow(&treasury_chest.withdrawal_proposals, withdrawal_proposal_id);
-        assert!(!proposal_ref.executed, E_PROPOSAL_ALREADY_EXECUTED);
-        assert!(vector::length(&proposal_ref.approvals_received) >= treasury_chest.min_approvals_required, E_NOT_ENOUGH_APPROVALS);
-        let amount_to_withdraw = proposal_ref.amount;
-        let recipient = proposal_ref.recipient;
-        assert!(balance::value(&treasury_chest.funds) >= amount_to_withdraw, E_INSUFFICIENT_FUNDS_IN_TREASURY);
+        assert!(is_some(&proposal.param_target_module) &&
+                is_some(&proposal.param_name) &&
+                is_some(&proposal.param_new_value_bcs), E_MISSING_PARAMETER_CHANGE_DATA);
 
-        // Borrow mutably to execute
-        let proposal = table_borrow_mut(&mut treasury_chest.withdrawal_proposals, withdrawal_proposal_id);
-        proposal.executed = true; // Mark executed
+        let target_module_str = option_borrow(&proposal.param_target_module);
+        let param_name_str = option_borrow(&proposal.param_name);
+        let new_value_bcs_ref = option_borrow(&proposal.param_new_value_bcs);
 
-        let withdrawn_balance = balance::split(&mut treasury_chest.funds, amount_to_withdraw);
-        let withdrawn_coins = coin::from_balance(withdrawn_balance, ctx);
-        transfer::public_transfer(withdrawn_coins, recipient);
-
-        event::emit(DirectWithdrawalExecuted {
-            withdrawal_proposal_id, executor: sender(ctx), recipient, amount: amount_to_withdraw,
-            remaining_balance: balance::value(&treasury_chest.funds),
-        });
-        // Optional: Remove executed proposal from table and delete its object
-        // let executed_proposal_obj = table_remove(&mut treasury_chest.withdrawal_proposals, withdrawal_proposal_id);
-        // object::delete(executed_proposal_obj.id);
-    }
-
-    // --- Administrative Functions (Require TreasuryAdminCap) ---
-
-    /// Updates key treasury configuration parameters (min/max approvers).
-    public entry fun admin_update_treasury_config(
-        _admin_cap: &TreasuryAdminCap, // Authorization
-        treasury_chest: &mut TreasuryChest,
-        new_min_approvals: u64,
-        new_max_approvers: u64,
-        ctx: &mut TxContext
-    ) {
-        assert!(new_min_approvals > 0 && new_min_approvals <= new_max_approvers, E_INVALID_CONFIG_VALUE);
-        let current_approver_count = vector::length(&treasury_chest.approvers);
-        assert!(current_approver_count <= new_max_approvers, E_INVALID_CONFIG_VALUE); // Cannot set max lower than current count
-        assert!(new_min_approvals <= current_approver_count || current_approver_count == 0, E_INVALID_CONFIG_VALUE); // Min cannot be > current unless 0
-
-        treasury_chest.min_approvals_required = new_min_approvals;
-        treasury_chest.max_approvers = new_max_approvers;
-
-        event::emit(TreasuryConfigUpdated {
-            updated_by: sender(ctx), new_min_approvals, new_max_approvers,
-        });
-    }
-
-    /// Adds an approver to the multi-sig list. Requires TreasuryAdminCap.
-    public entry fun admin_add_approver(
-        _admin_cap: &TreasuryAdminCap,
-        treasury_chest: &mut TreasuryChest,
-        new_approver: address,
-        ctx: &mut TxContext
-    ) {
-        assert!(vector::length(&treasury_chest.approvers) < treasury_chest.max_approvers, E_APPROVER_LIST_FULL);
-        assert!(!vector::contains(&treasury_chest.approvers, &new_approver), E_APPROVER_ALREADY_EXISTS);
-        vector::push_back(&mut treasury_chest.approvers, new_approver);
-        event::emit(ApproverAdded { new_approver, added_by: sender(ctx), current_approver_count: vector::length(&treasury_chest.approvers) });
-    }
-
-    /// Removes an approver from the multi-sig list. Requires TreasuryAdminCap.
-    public entry fun admin_remove_approver(
-        _admin_cap: &TreasuryAdminCap,
-        treasury_chest: &mut TreasuryChest,
-        approver_to_remove: address,
-        ctx: &mut TxContext
-    ) {
-        let mut i = 0;
-        let mut found = false;
-        let approvers_len = vector::length(&treasury_chest.approvers);
-        // Ensure removing an approver doesn't make it impossible to meet min_approvals_required
-        assert!((approvers_len - 1) >= treasury_chest.min_approvals_required || treasury_chest.min_approvals_required == 0 || approvers_len == 1, E_INVALID_CONFIG_VALUE);
-
-        while (i < approvers_len) {
-            if (*vector::borrow(&treasury_chest.approvers, i) == approver_to_remove) {
-                vector::remove(&mut treasury_chest.approvers, i);
-                found = true;
-                break
-            };
-            i = i + 1;
+        if (*target_module_str == string::utf8(b"staking")) {
+            if (*param_name_str == string::utf8(b"min_validator_stake_threshold")) {
+                let new_value: u64 = bcs::from_bytes(new_value_bcs_ref); // Add error handling for from_bytes if possible
+                delegation_staking::admin_update_min_validator_stake(
+                    staking_admin_cap, staking_system_state, new_value, ctx
+                );
+            } else {
+                abort(E_INVALID_TARGET_MODULE_OR_PARAM_NAME);
+            }
+        } else if (*target_module_str == string::utf8(b"treasury")) {
+            if (*param_name_str == string::utf8(b"min_approvals_required")) {
+                let new_value: u64 = bcs::from_bytes(new_value_bcs_ref);
+                // Get current max_approvers to pass to the config update function
+                let current_max_approvers = treasury::get_max_approvers(treasury_chest);
+                treasury::admin_update_treasury_config(
+                    treasury_admin_cap, treasury_chest, new_value, current_max_approvers, ctx
+                );
+            } else if (*param_name_str == string::utf8(b"max_approvers")) {
+                let new_value: u64 = bcs::from_bytes(new_value_bcs_ref);
+                // Get current min_approvals to pass to the config update function
+                let current_min_approvals = treasury::get_min_approvals_required(treasury_chest);
+                treasury::admin_update_treasury_config(
+                    treasury_admin_cap, treasury_chest, current_min_approvals, new_value, ctx
+                );
+            } else {
+                abort(E_INVALID_TARGET_MODULE_OR_PARAM_NAME);
+            }
+        } else {
+            abort(E_INVALID_TARGET_MODULE_OR_PARAM_NAME); // Invalid target module
         };
-        assert!(found, E_CANNOT_REMOVE_NON_EXISTENT_APPROVER);
-        event::emit(ApproverRemoved { removed_approver: approver_to_remove, removed_by: sender(ctx), current_approver_count: vector::length(&treasury_chest.approvers) });
+
+        event::emit(ParameterChangeExecuted {
+            proposal_id: proposal.id,
+            target_module: *target_module_str,
+            parameter_name: *param_name_str,
+            new_value_bcs: *new_value_bcs_ref, // Copy the vector for the event
+        });
     }
 
-    /// Transfers the TreasuryAccessCap to a new address. Only current owner can call.
-    public entry fun transfer_treasury_access_cap(cap: TreasuryAccessCap, recipient: address, _ctx: &mut TxContext) {
+    /// Executes an emergency action. Logic depends heavily on the nature of the emergency.
+    fun execute_emergency_action(
+        proposal: &Proposal,
+        staking_system_state: &mut GovernanceSystemState,
+        _treasury_chest: &mut TreasuryChest, // Example, might not be needed
+        staking_admin_cap: &StakingAdminCap, // Example, if pausing staking
+        _treasury_admin_cap: &TreasuryAdminCap, // Example, if pausing treasury
+        ctx: &mut TxContext
+    ) {
+        // Example: Proposal description might indicate "PAUSE_STAKING"
+        // This requires parsing proposal.description or having structured emergency action types.
+        let action_description_str = string::utf8(b"Emergency action: Staking system paused (example).");
+        if (proposal.description == string::utf8(b"EMERGENCY:PAUSE_STAKING")) { // Highly simplified
+             // delegation_staking::admin_set_staking_paused(staking_admin_cap, staking_system_state, true, ctx);
+             abort(E_ACTION_FAILED_PLACEHOLDER); // Placeholder until pause function exists
+        } else {
+            action_description_str = string::utf8(b"Emergency action: Unspecified action based on proposal description.");
+        };
+
+        event::emit(EmergencyActionExecuted {
+            proposal_id: proposal.id,
+            action_description: action_description_str,
+        });
+    }
+
+    /// Placeholder for executing general proposals that don't fit other categories.
+    fun execute_general_action(
+        proposal: &Proposal,
+        _ctx: &mut TxContext
+    ) {
+        // Logic depends entirely on what the general proposal entails.
+        // Could involve emitting a signal, logging information, or relying on off-chain interpretation.
+        event::emit(GeneralActionExecuted {
+            proposal_id: proposal.id,
+            action_description: proposal.description, // Use proposal's description
+        });
+    }
+
+    /// Transfers the ProposalExecutionCap to a new address. Only current owner can call.
+    public entry fun transfer_proposal_execution_cap(cap: ProposalExecutionCap, recipient: address, _ctx: &mut TxContext) {
         transfer::transfer(cap, recipient);
     }
-
-    /// Transfers the TreasuryAdminCap to a new address. Only current owner can call.
-    public entry fun transfer_treasury_admin_cap(cap: TreasuryAdminCap, recipient: address, _ctx: &mut TxContext) {
-        transfer::transfer(cap, recipient);
-    }
-
-    // === Getter Functions (Read-only) ===
-    public fun get_treasury_balance(treasury_chest: &TreasuryChest): u64 { value(&treasury_chest.funds) }
-    public fun get_approvers(treasury_chest: &TreasuryChest): vector<address> { *&treasury_chest.approvers } // Returns a copy
-    public fun get_min_approvals_required(treasury_chest: &TreasuryChest): u64 { treasury_chest.min_approvals_required }
-    public fun get_max_approvers(treasury_chest: &TreasuryChest): u64 { treasury_chest.max_approvers }
-    public fun get_withdrawal_proposal(treasury_chest: &TreasuryChest, proposal_id: u64): &WithdrawalProposal {
-        assert!(table_contains(&treasury_chest.withdrawal_proposals, proposal_id), E_WITHDRAWAL_PROPOSAL_NOT_FOUND);
-        table_borrow(&treasury_chest.withdrawal_proposals, proposal_id)
-    }
-    public fun get_next_direct_withdrawal_proposal_id(treasury_chest: &TreasuryChest): u64 { treasury_chest.next_withdrawal_proposal_id }
 }
 
