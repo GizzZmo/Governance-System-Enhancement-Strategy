@@ -1,4 +1,4 @@
-ame: CI and Deployment for Sui Move Project
+name: CI and Deployment for Sui Move Project
 
 on:
   push:
