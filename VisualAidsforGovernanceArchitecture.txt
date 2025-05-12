@@ -1,0 +1,106 @@
+Visual Aids for Governance Architecture
+This section describes the intended content for key diagrams that will help stakeholders understand the Sui Governance Module's architecture, as per Section 4 of the Project Enhancement and Outreach Strategy.
+
+1. Component Diagram (C4 Model - Level 3)
+
+Title: Sui Governance Module - Core Components & Interactions
+
+Objective: To show the main smart contract modules within the deployed Sui package and their primary relationships.
+
+Components (Boxes):
+
+governance.move
+
+delegation_staking.move
+
+treasury.move
+
+proposal_handler.move
+
+Shared Object: GovernanceSystemState (managed by delegation_staking)
+
+Shared Object: TreasuryChest (managed by treasury)
+
+Shared Object: Proposal (created by governance, instances are shared)
+
+Owned Object: StakedSui (created/managed by delegation_staking, owned by user)
+
+Capability: TreasuryAccessCap (held by governance or proposal_handler, minted by treasury)
+
+Capability: ProposalExecutionCap (held by governance, minted by proposal_handler)
+
+Connectors (Arrows indicating calls or data flow):
+
+governance -> delegation_staking (To read: total_system_stake, user stake_amount, user reputation_score).
+
+governance -> proposal_handler (To call: handle_proposal_execution, passing ProposalExecutionCap).
+
+proposal_handler -> treasury (To call: process_approved_funding_by_governance, passing TreasuryAccessCap).
+
+proposal_handler -> delegation_staking (To call: functions to update staking parameters, e.g., admin_update_min_validator_stake).
+
+proposal_handler -> treasury (To call: functions to update treasury parameters, e.g., admin_update_min_approvals).
+
+User -> governance (To call: submit_proposal, hybrid_vote).
+
+User -> delegation_staking (To call: stake_sui, delegate_sui, etc.).
+
+User -> treasury (To call: deposit_funds, multi-sig functions).
+
+Tool: Mermaid for embedding in Markdown.
+
+2. Sequence Diagram: Proposal Execution Flow
+
+Title: Sequence Diagram - Successful Funding Proposal Execution
+
+Objective: To illustrate the sequence of calls and interactions when a funding proposal is successfully voted on and executed.
+
+Lifelines (Vertical Lines):
+
+User/Voter
+
+governance.move Module/Proposal Object
+
+sui::Clock Object
+
+proposal_handler.move Module
+
+treasury.move Module/TreasuryChest Object
+
+(Optional) delegation_staking.move if veto checks involve current total stake.
+
+Sequence of Messages (Arrows):
+
+User calls governance::execute_proposal(proposal_obj, ..., exec_cap, treasury_chest, treasury_access_cap, ...).
+
+governance calls clock::timestamp_ms(clock) (to check end_time_ms).
+
+governance performs internal checks (quorum, votes_for > votes_against, veto).
+
+governance sets proposal.executed = true.
+
+governance calls proposal_handler::handle_proposal_execution(exec_cap, proposal_obj, treasury_chest, treasury_access_cap, ...).
+
+proposal_handler determines proposal type is "Funding".
+
+proposal_handler extracts funding amount & recipient from proposal_obj.
+
+proposal_handler calls treasury::process_approved_funding_by_governance(treasury_chest, treasury_access_cap, amount, recipient, ctx).
+
+treasury checks treasury_access_cap, verifies funds, splits balance.
+
+treasury calls coin::from_balance() and transfer::public_transfer() to send funds to recipient.
+
+treasury emits FundsWithdrawnByGovernance.
+
+proposal_handler emits FundingProposalExecuted.
+
+governance emits ProposalExecuted.
+
+Control returns to User.
+
+Notes: Highlight capability checks and state changes (e.g., proposal.executed).
+
+Tool: Mermaid.
+
+These initial documents and descriptions should provide a good foundation for the actionable steps outlined in your project enhancement strategy.
