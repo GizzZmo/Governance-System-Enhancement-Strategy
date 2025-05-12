@@ -1,4 +1,4 @@
-Here is an improved version of the `README.md` file with the suggested changes implemented:
+Here is the `README.md` file
 
 ---
 
