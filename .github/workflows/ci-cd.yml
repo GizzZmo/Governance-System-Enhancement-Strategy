@@ -54,7 +54,7 @@ jobs:
     - name: Verify Installation
       run: |
         sui --version
-        move --version
+        sui move --version # Correct way to check Move CLI version via Sui CLI
       shell: bash
 
     - name: Build Project (Also Fetches Dependencies)
