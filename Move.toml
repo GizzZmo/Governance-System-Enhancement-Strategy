@@ -2,18 +2,20 @@
 [package]
 name = "HybridGovernance"
 version = "0.0.1"
-// published-at = "0x..." // Optional: Record the address after publishing
+// published-at = "0x..." // This will be filled by the Sui CLI after the first successful publish.
 
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "main" }
-// For older Sui versions, it might be:
-// Sui = { local = "../sui/sui_programmability/sui-framework" } // Adjust path if Sui source is local
+// For local development or specific Sui versions, the path might differ:
+// Sui = { local = "../path/to/sui/crates/sui-framework/packages/sui-framework" }
 
 [addresses]
-// This is where you'd put the address of your published package if you need to refer to it.
-// For initial deployment, this might be empty or have placeholders.
-// hybrid_governance_admin = "0xADMIN_ADDRESS_HERE" // Example if you have an admin address
-hybrid_governance = "0x0" // Placeholder, will be filled after first publish
-```bash
-#!/bin/bash
+// This section is used to assign a named address to your package after its first publication.
+// This allows modules within the package to refer to each other using this name if necessary,
+// especially if a module needs to construct a type from another module using its fully qualified name
+// that includes the package's published ID.
+// For initial development and before the first publish, it's common to set this to "0x0".
+// After publishing, you would replace "0x0" with the actual Package ID.
+hybrid_governance_pkg = "0x0"
+
 
