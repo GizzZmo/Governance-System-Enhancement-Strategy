@@ -1,6 +1,7 @@
 // File: sources/governance.move
 // Manages proposal submission, voting, and basic execution checks.
-module hybrid_governance_pkg::governance {
+// Updated intra-package imports to use 'crate::'.
+module hybrid_governance_pkg::governance { // Package name remains for module declaration
     use std::string::{Self, String};
     use std::option::{Self, Option, some, none, is_some, destroy_some};
     use std::vector;
@@ -10,43 +11,35 @@ module hybrid_governance_pkg::governance {
     use sui::transfer;
     use sui::event;
 
-    // Import necessary types from other modules within the same package
-    // The `hybrid_governance_pkg` named address from Move.toml will resolve to the package's ID after deployment.
-    use hybrid_governance_pkg::delegation_staking::{Self, StakedSui, GovernanceSystemState, AdminCap as StakingAdminCap};
-    use hybrid_governance_pkg::treasury::{Self, TreasuryChest, TreasuryAccessCap, TreasuryAdminCap};
-    use hybrid_governance_pkg::proposal_handler; // Import the module itself for its types like ProposalExecutionCap
+    // Use 'crate::' for importing modules from the same package
+    use crate::delegation_staking::{Self, StakedSui, GovernanceSystemState, AdminCap as StakingAdminCap};
+    use crate::treasury::{Self, TreasuryChest, TreasuryAccessCap, TreasuryAdminCap};
+    use crate::proposal_handler; // Import the module itself for its types like ProposalExecutionCap
 
     // === Constants ===
-    const MAX_TIME_BONUS: u128 = 5; // Maximum bonus points for voting early
-    const DEFAULT_VOTING_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+    const MAX_TIME_BONUS: u128 = 5;
+    const DEFAULT_VOTING_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
     // === Structs ===
-
-    /// Represents a governance proposal. This object is shared after creation.
     struct Proposal has key, store {
-        id: ID, // The unique ID of this Proposal object
+        id: ID,
         creator: address,
         description: String,
-        proposal_type: u8, // 0: General, 1: Minor Param, 2: Critical Param/Vetoable, 3: Funding, 4: Emergency
-        // --- Voting State ---
+        proposal_type: u8,
         votes_for: u128,
         votes_against: u128,
         veto_votes: u128,
-        // --- Quorum ---
         quorum_threshold_percentage: u8,
-        total_stake_at_creation: u128, // Total system stake when proposal was created
-        // --- Timing ---
+        total_stake_at_creation: u128,
         start_time_ms: u64,
         end_time_ms: u64,
         voting_duration_ms: u64,
-        // --- Execution ---
         executed: bool,
-        // --- Proposal Specific Data ---
         funding_amount: Option<u64>,
         funding_recipient: Option<address>,
-        param_target_module: Option<String>, // e.g., "staking", "treasury"
-        param_name: Option<String>,          // e.g., "min_validator_stake"
-        param_new_value_bcs: Option<vector<u8>>, // BCS serialized new value
+        param_target_module: Option<String>,
+        param_name: Option<String>,
+        param_new_value_bcs: Option<vector<u8>>,
     }
 
     // === Errors ===
@@ -60,7 +53,7 @@ module hybrid_governance_pkg::governance {
     const E_VOTING_PERIOD_ALREADY_ENDED: u64 = 8;
     const E_VOTING_PERIOD_NOT_STARTED: u64 = 9;
     const E_INVALID_VOTING_DURATION: u64 = 10;
-    const E_ARITHMETIC_OVERFLOW: u64 = 11; // For math operations
+    const E_ARITHMETIC_OVERFLOW: u64 = 11;
     const E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE: u64 = 12;
 
     // === Events ===
@@ -68,7 +61,7 @@ module hybrid_governance_pkg::governance {
         proposal_id: ID,
         creator: address,
         proposal_type: u8,
-        description: String, // Include description in event
+        description: String,
         quorum_percentage: u8,
         total_stake_at_creation: u128,
         end_time_ms: u64,
@@ -77,11 +70,11 @@ module hybrid_governance_pkg::governance {
     struct VoteCast has copy, drop {
         proposal_id: ID,
         voter: address,
-        staked_sui_object_id: ID, // ID of the StakedSui object used
+        staked_sui_object_id: ID,
         stake_used: u128,
         base_quadratic_votes: u128,
         time_bonus: u128,
-        reputation_weight_factor: u128, // e.g., 105 for 105%
+        reputation_weight_factor: u128,
         final_weighted_votes: u128,
         support: bool,
         is_veto: bool,
@@ -89,49 +82,45 @@ module hybrid_governance_pkg::governance {
 
     struct ProposalExecuted has copy, drop {
         proposal_id: ID,
-        executed_by: address, // Address that called execute_proposal
+        executed_by: address,
     }
 
     // === Public Entry Functions ===
-
-    /// Submits a new governance proposal.
     public entry fun submit_proposal(
         description_vec: vector<u8>,
         proposal_type: u8,
-        // Optional fields for specific proposal types
         funding_amount_opt: Option<u64>,
         funding_recipient_opt: Option<address>,
-        param_target_module_opt: Option<vector<u8>>, // String as vector<u8>
-        param_name_opt: Option<vector<u8>>,          // String as vector<u8>
+        param_target_module_opt: Option<vector<u8>>,
+        param_name_opt: Option<vector<u8>>,
         param_new_value_bcs_opt: Option<vector<u8>>,
-        // System objects
-        system_state: &GovernanceSystemState,
+        system_state: &GovernanceSystemState, // From crate::delegation_staking
         clock: &Clock,
         ctx: &TxContext
     ) {
         let creator_addr = sender(ctx);
         let current_time_ms = clock::timestamp_ms(clock);
         let voting_duration_ms = determine_voting_duration(proposal_type);
-        let end_time_ms = current_time_ms + voting_duration_ms; // Potential overflow if duration is massive; assume reasonable.
+        let end_time_ms = current_time_ms + voting_duration_ms;
 
         let quorum_percentage = determine_quorum_percentage(proposal_type);
+        // Call using the imported module name directly or with 'crate::'
         let total_stake = delegation_staking::get_total_system_stake(system_state) as u128;
 
-        // Validate required fields based on proposal_type
-        if (proposal_type == 3) { // Funding
+        if (proposal_type == 3) {
             assert!(is_some(&funding_amount_opt) && is_some(&funding_recipient_opt), E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE);
-        } else if (proposal_type == 1 || proposal_type == 2) { // Parameter Change
+        } else if (proposal_type == 1 || proposal_type == 2) {
             assert!(is_some(&param_target_module_opt) && is_some(&param_name_opt) && is_some(&param_new_value_bcs_opt), E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE);
         };
 
-        let proposal_obj_uid = new(ctx); // UID for the new Proposal object
-        let proposal_id_val = uid_to_inner(&proposal_obj_uid); // Get the actual ID
+        let proposal_obj_uid = new(ctx);
+        let proposal_id_val = uid_to_inner(&proposal_obj_uid);
         let proposal_description = string::utf8(description_vec);
 
         let new_proposal = Proposal {
             id: proposal_id_val,
             creator: creator_addr,
-            description: proposal_description, // Store the converted String
+            description: proposal_description,
             proposal_type,
             votes_for: 0,
             votes_against: 0,
@@ -144,7 +133,6 @@ module hybrid_governance_pkg::governance {
             executed: false,
             funding_amount: funding_amount_opt,
             funding_recipient: funding_recipient_opt,
-            // Convert vector<u8> to String for storage if present
             param_target_module: if (is_some(&param_target_module_opt)) { some(string::utf8(destroy_some(param_target_module_opt))) } else { none() },
             param_name: if (is_some(&param_name_opt)) { some(string::utf8(destroy_some(param_name_opt))) } else { none() },
             param_new_value_bcs: param_new_value_bcs_opt,
@@ -154,22 +142,19 @@ module hybrid_governance_pkg::governance {
             proposal_id: proposal_id_val,
             creator: creator_addr,
             proposal_type,
-            description: new_proposal.description, // Emit the string description
+            description: new_proposal.description,
             quorum_percentage,
             total_stake_at_creation: total_stake,
             end_time_ms,
         });
-
-        // Share the proposal object so it can be accessed for voting
         transfer::share_object(new_proposal);
     }
 
-    /// Allows a user to cast a vote on an active proposal using their StakedSui.
     public entry fun hybrid_vote(
-        proposal: &mut Proposal,         // The shared Proposal object to vote on
-        staked_sui_obj: &StakedSui,    // The voter's StakedSui object
-        support_vote: bool,            // True for 'yes', false for 'no'
-        is_veto_flag: bool,            // True if this is a veto vote (for specific proposal types)
+        proposal: &mut Proposal,
+        staked_sui_obj: &StakedSui, // From crate::delegation_staking
+        support_vote: bool,
+        is_veto_flag: bool,
         clock: &Clock,
         ctx: &TxContext
     ) {
@@ -186,15 +171,12 @@ module hybrid_governance_pkg::governance {
         let base_quadratic_votes = sqrt(stake_amount);
         let elapsed_ms = current_time_ms - proposal.start_time_ms;
         let time_bonus = calculate_time_bonus(elapsed_ms, proposal.voting_duration_ms);
-        // Example: reputation of 100 -> 10% bonus, 200 -> 20% bonus. Max 1000 rep for 100% bonus (factor of 2).
-        let reputation_weight_factor = 100 + (reputation / 10); // Results in a percentage factor (e.g., 110 for 110%)
-
+        let reputation_weight_factor = 100 + (reputation / 10);
         let votes_with_bonus = base_quadratic_votes + time_bonus;
-        // Apply reputation factor: (base * factor) / 100
         let final_weighted_votes = (votes_with_bonus * reputation_weight_factor) / 100;
 
         if (is_veto_flag) {
-            assert!(proposal.proposal_type == 2, E_INVALID_PROPOSAL_TYPE_FOR_VETO); // Type 2 is Critical/Vetoable
+            assert!(proposal.proposal_type == 2, E_INVALID_PROPOSAL_TYPE_FOR_VETO);
             proposal.veto_votes = proposal.veto_votes + final_weighted_votes;
         } else if (support_vote) {
             proposal.votes_for = proposal.votes_for + final_weighted_votes;
@@ -216,17 +198,15 @@ module hybrid_governance_pkg::governance {
         });
     }
 
-    /// Executes a passed proposal. Can be called by anyone after the voting period ends.
     public entry fun execute_proposal(
         proposal: &mut Proposal,
-        system_state: &mut GovernanceSystemState, // Mutable if handler might change it (e.g., staking params)
+        system_state: &mut GovernanceSystemState, // From crate::delegation_staking
         clock: &Clock,
-        // --- Capabilities needed by proposal_handler ---
-        exec_cap: &proposal_handler::ProposalExecutionCap,
-        treasury_chest: &mut TreasuryChest,
-        treasury_access_cap: &TreasuryAccessCap,
-        treasury_admin_cap: &TreasuryAdminCap,
-        staking_admin_cap: &StakingAdminCap,
+        exec_cap: &proposal_handler::ProposalExecutionCap, // From crate::proposal_handler
+        treasury_chest: &mut TreasuryChest, // From crate::treasury
+        treasury_access_cap: &TreasuryAccessCap, // From crate::treasury
+        treasury_admin_cap: &TreasuryAdminCap,   // From crate::treasury
+        staking_admin_cap: &StakingAdminCap,     // From crate::delegation_staking
         ctx: &TxContext
     ) {
         assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
@@ -238,21 +218,17 @@ module hybrid_governance_pkg::governance {
         assert!(total_votes_cast >= quorum_value, E_QUORUM_NOT_MET);
         assert!(proposal.votes_for > proposal.votes_against, E_PROPOSAL_REJECTED);
 
-        if (proposal.proposal_type == 2) { // Critical/Vetoable
-            // Example veto threshold: 10% of total stake at proposal creation
+        if (proposal.proposal_type == 2) {
             let veto_threshold = (proposal.total_stake_at_creation * 10) / 100;
-            assert!(proposal.veto_votes < veto_threshold, E_PROPOSAL_REJECTED); // Vetoed
+            assert!(proposal.veto_votes < veto_threshold, E_PROPOSAL_REJECTED);
         }
-
-        // Mark as executed BEFORE calling the handler to prevent re-entrancy or re-execution on handler failure.
         proposal.executed = true;
 
-        // Call the proposal handler to perform specific actions
         proposal_handler::handle_proposal_execution(
             exec_cap,
-            proposal, // Pass immutable reference now, as its 'executed' state is set
+            proposal,
             treasury_chest,
-            staking_system_state, // Pass mutable system_state
+            staking_system_state,
             treasury_access_cap,
             treasury_admin_cap,
             staking_admin_cap,
@@ -265,72 +241,42 @@ module hybrid_governance_pkg::governance {
         });
     }
 
-    // === Helper Functions ===
-
-    /// Determines the required quorum percentage based on proposal type.
     fun determine_quorum_percentage(proposal_type: u8): u8 {
-        if (proposal_type == 0) { 10 } // General
-        else if (proposal_type == 1) { 20 } // Minor Parameter Change
-        else if (proposal_type == 2) { 33 } // Critical Parameter Change (Vetoable)
-        else if (proposal_type == 3) { 15 } // Funding Request
-        else if (proposal_type == 4) { 40 } // Emergency
+        if (proposal_type == 0) { 10 }
+        else if (proposal_type == 1) { 20 }
+        else if (proposal_type == 2) { 33 }
+        else if (proposal_type == 3) { 15 }
+        else if (proposal_type == 4) { 40 }
         else { abort(E_INVALID_PROPOSAL_TYPE) }
     }
 
-    /// Determines voting duration in milliseconds based on proposal type.
     fun determine_voting_duration(proposal_type: u8): u64 {
-        if (proposal_type == 4) { // Emergency
-            1 * 24 * 60 * 60 * 1000 // 1 day in ms
-        } else {
-            DEFAULT_VOTING_DURATION_MS // Default duration for others
-        }
+        if (proposal_type == 4) { 1 * 24 * 60 * 60 * 1000 }
+        else { DEFAULT_VOTING_DURATION_MS }
     }
 
-    /// Calculates time bonus (linear decay).
     fun calculate_time_bonus(elapsed_ms: u64, total_duration_ms: u64): u128 {
-        if (total_duration_ms == 0) { return 0 }; // Avoid division by zero
+        if (total_duration_ms == 0) { return 0 };
         let elapsed_u128 = elapsed_ms as u128;
         let total_duration_u128 = total_duration_ms as u128;
         let max_bonus_u128 = MAX_TIME_BONUS;
-
-        // Ensure elapsed time does not exceed total duration for calculation
-        if (elapsed_u128 >= total_duration_u128) { return 0 }; // No bonus if voted at/after end
-
-        // decay = (elapsed / total_duration) * MAX_TIME_BONUS
-        // To prevent precision loss with integer division, multiply first:
+        if (elapsed_u128 >= total_duration_u128) { return 0 };
         let decay_numerator = elapsed_u128 * max_bonus_u128;
         let decay = decay_numerator / total_duration_u128;
-
-        // Bonus decreases over time: MAX_TIME_BONUS - decay
-        if (max_bonus_u128 >= decay) {
-            max_bonus_u128 - decay
-        } else {
-            0 // Bonus cannot be negative
-        }
+        if (max_bonus_u128 >= decay) { max_bonus_u128 - decay } else { 0 }
     }
 
-    /// Integer square root function (Babylonian method).
     fun sqrt(x: u128): u128 {
         if (x == 0) { return 0 };
-        let mut guess = x; // Start with x or x/2 for faster convergence
+        let mut guess = x;
         let mut prev_guess = 0;
-        // Iterate until guess converges or a max number of iterations for safety
-        // Sui's compute budget is a consideration.
-        // A loop that checks for convergence is generally fine.
         loop {
-            if (guess == 0) { return 0 }; // Avoid division by zero if guess becomes 0
+            if (guess == 0) { return 0 };
             prev_guess = guess;
             guess = (guess + x / guess) / 2;
-            // Check for convergence: if guess is no longer changing or starts increasing
             if (guess >= prev_guess) {
-                // If (prev_guess)^2 was closer than (guess)^2, use prev_guess
-                // This handles cases where integer division causes oscillation around the true root.
-                // For quadratic voting, exactness is less critical than a good approximation.
-                // The check (guess+1)^2 <= x is for finding the floor of the true sqrt.
                 if (prev_guess * prev_guess <= x) { return prev_guess } else { return guess };
             };
         };
-        // Fallback, should be unreachable if loop logic is correct
-        // return guess;
     }
 }
