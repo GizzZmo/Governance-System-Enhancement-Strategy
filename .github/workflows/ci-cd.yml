@@ -90,7 +90,7 @@ jobs:
         set -x
         echo "Installing Sui binaries using cargo for deployment..."
         # Ensure this branch matches the target network or desired stability
-        cargo install --locked --git https://github.com/MystenLabs/sui.git --branch devnet sui
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag devnet-v1.20.0 sui
         INSTALL_EXIT_CODE=$?
         if [ $INSTALL_EXIT_CODE -ne 0 ]; then echo "Error: cargo install for Sui failed."; exit $INSTALL_EXIT_CODE; fi
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
