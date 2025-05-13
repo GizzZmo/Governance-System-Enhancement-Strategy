@@ -1,14 +1,26 @@
 # File: Move.toml
+# Sui package manifest for the HybridGovernance module.
+
 [package]
 name = "HybridGovernance"
 version = "0.0.1"
+# published-at = "0x..." # This will be filled by the Sui CLI after the first successful publish.
 
 [dependencies]
-# EMPTY - let Sui auto-include
+# This section should be EMPTY for standard Sui framework dependencies (Sui, MoveStdlib, SuiSystem, Bridge, DeepBook etc.)
+# The Sui build system automatically includes these. Explicitly listing them here can
+# cause "Duplicate module" errors.
+# Only list other, non-standard Move packages your project depends on here.
 
 [addresses]
-hybrid_governance_pkg = "0x0" # Our package's placeholder
-std = "0x1"
-sui = "0x2"
-# We could even try adding deepbook if that's the specific conflict point
-# deepbook = "0xb" # This is a guess, might not be the correct named address for it
+# For local development and before the first publish, this section can often be left empty.
+# The `hybrid_governance_pkg` name used in your `module hybrid_governance_pkg::module_name`
+# declarations will be understood by the compiler for the current, unpublished package.
+#
+# After the first successful publish, if you need to refer to this package by its
+# on-chain ID in other contexts (e.g., other local packages depending on this one by ID,
+# or for certain advanced self-referential type constructions), you would then add:
+# hybrid_governance_pkg = "0x<ACTUAL_PUBLISHED_ID>"
+#
+# For now, keeping it empty is the cleanest approach to avoid potential resolution conflicts
+# with system-provided addresses.
