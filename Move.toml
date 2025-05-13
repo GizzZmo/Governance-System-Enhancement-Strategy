@@ -7,11 +7,11 @@ version = "0.0.1"
 # published-at = "0x..." # Optional: Record the address after publishing. Will be filled by Sui CLI.
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "main" }
-# Notes on Sui dependency:
-# For specific Sui versions or local development, you might use a local path or a specific git revision/tag:
-# Sui = { local = "../path/to/sui/crates/sui-framework/packages/sui-framework" }
-# Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "devnet-v1.x.x" }
+# The Sui framework (which includes MoveStdlib, Sui System, etc.) is typically
+# automatically included by the Sui build system.
+# Explicitly listing it can lead to duplicate module errors, as seen with 'ecdsa_k1'.
+# We are removing the explicit 'Sui = { git = ... }' dependency.
+# If you have other specific, non-standard dependencies, list them here.
 
 [addresses]
 # This section is used to assign a named address to your package after its first publication.
@@ -23,3 +23,7 @@ Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fram
 # After publishing successfully for the first time, you would replace "0x0" with the actual Package ID
 # output by the `sui client publish` command (or your `deploy.sh` script).
 hybrid_governance_pkg = "0x0"
+
+# You generally do not need to define 'std = "0x1"' or 'sui = "0x2"' here
+# as they are part of the automatically included standard libraries.
+# Your code can refer to them directly, e.g., sui::coin::Coin or std::option::Option.
