@@ -1,9 +1,11 @@
+// MinimalTest/Move.toml
 [package]
 name = "MinimalTest"
 version = "0.0.1"
 
 [dependencies]
-# EMPTY! Let the build system auto-include Sui, MoveStdlib, Bridge, SuiSystem for the pinned Sui CLI version.
+# Leave this section completely empty for system dependencies like Sui, MoveStdlib, Bridge.
+# The Sui CLI (pinned to mainnet-v1.48.2 in your CI) will automatically provide them.
 
 [addresses]
 minimal_test_addr = "0x0"
