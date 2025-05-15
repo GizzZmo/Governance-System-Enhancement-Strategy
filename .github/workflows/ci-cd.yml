@@ -31,7 +31,7 @@ jobs:
 
         echo "Installing Sui binaries using cargo with pinned tag mainnet-v1.48.2..."
         # Using the specific mainnet tag as per user request.
-        SUI_RELEASE_TAG="mainnet-v1.48.2" 
+        SUI_RELEASE_TAG="testnet-v1.48.1" 
         
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
