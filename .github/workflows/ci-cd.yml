@@ -20,32 +20,27 @@ jobs:
     - name: Setup Rust toolchain
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: stable # This will use the latest stable Rust
+        toolchain: stable # This will use the latest stable Rust (e.g., 1.87.0)
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Version)
+    - name: Install Sui Binaries using Cargo (Pinned Mainnet Version)
       run: |
         set -e 
         set -x 
 
-        echo "Installing Sui binaries using cargo with a pinned testnet tag..."
-        # ------------------------------------------------------------------------------------
-        # ### CRITICAL USER ACTION REQUIRED ###
-        # The tag below ('testnet-v1.48.1') is based on recent info.
-        # You MUST verify and replace it with the LATEST SUITABLE 'testnet-vX.Y.Z' release tag 
-        # from the official Sui GitHub releases: https://github.com/MystenLabs/sui/releases
-        # A more recent tag is more likely to be compatible with the current stable Rust.
-        SUI_RELEASE_TAG="testnet-v1.48.1" # <--- ### VERIFY THIS TAG IS SUITABLE ###
-        # ------------------------------------------------------------------------------------
+        echo "Installing Sui binaries using cargo with pinned tag mainnet-v1.48.2..."
+        # Using the specific mainnet tag as requested.
+        # Note: For Testnet deployment, a corresponding 'testnet-vX.Y.Z' tag is usually recommended.
+        SUI_RELEASE_TAG="mainnet-v1.48.2" # <--- ### Using mainnet-v1.48.2 as requested ###
         
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
         INSTALL_EXIT_CODE=$?
         if [ $INSTALL_EXIT_CODE -ne 0 ]; then
           echo "Error: cargo install for Sui (tag $SUI_RELEASE_TAG) failed with exit code $INSTALL_EXIT_CODE."
-          echo "This might be due to the chosen Sui tag not being compatible with the current Rust stable version."
-          echo "Please ensure SUI_RELEASE_TAG is a recent and valid tag from https://github.com/MystenLabs/sui/releases"
+          echo "This might be due to the tag not existing, being mistyped, or an incompatibility with the current Rust stable version."
+          echo "Please ensure SUI_RELEASE_TAG is a valid tag from https://github.com/MystenLabs/sui/releases"
           exit $INSTALL_EXIT_CODE
         fi
         echo "Successfully installed Sui from tag $SUI_RELEASE_TAG."
@@ -91,16 +86,13 @@ jobs:
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Version)
+    - name: Install Sui Binaries using Cargo (Pinned Mainnet Version)
       run: |
         set -e
         set -x
-        echo "Installing Sui binaries using cargo with a pinned testnet tag for deployment..."
-        # ------------------------------------------------------------------------------------
-        # ### CRITICAL USER ACTION REQUIRED ###
+        echo "Installing Sui binaries using cargo with pinned tag mainnet-v1.48.2 for deployment..."
         # Ensure this tag MATCHES the tag used in the 'build' job for consistency.
-        SUI_RELEASE_TAG="testnet-v1.48.1" # <--- ### VERIFY THIS TAG IS SUITABLE ###
-        # ------------------------------------------------------------------------------------
+        SUI_RELEASE_TAG="mainnet-v1.48.2" # <--- ### Using mainnet-v1.48.2 as requested ###
 
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
