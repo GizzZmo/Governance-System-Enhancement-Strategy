@@ -1,3 +1,4 @@
 module minimal_test_addr::minimal_module {
-    // Intentionally empty, or with a single trivial public fun init(ctx: &mut TxContext) {}
+    // public fun init(_ctx: &mut sui::tx_context::TxContext) { /* nothing */ } 
+    // Even an empty module is fine for this test.
 }
