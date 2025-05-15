@@ -20,30 +20,32 @@ jobs:
     - name: Setup Rust toolchain
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: stable # Or a specific Rust version compatible with Sui
+        toolchain: stable # This will use the latest stable Rust (e.g., 1.80.0+)
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Version)
+    - name: Install Sui Binaries using Cargo (Pinned Testnet Version)
       run: |
-        set -e # Exit immediately if a command exits with a non-zero status
-        set -x # Echo each command before executing
+        set -e 
+        set -x 
 
         echo "Installing Sui binaries using cargo with a pinned testnet tag..."
-        # IMPORTANT: Replace 'testnet-v1.25.0' with the latest suitable testnet release tag
-        # from https://github.com/MystenLabs/sui/releases
-        SUI_RELEASE_TAG="testnet-v1.25.0" # <--- ### USER ACTION REQUIRED: UPDATE THIS TAG ###
+        # Using a specific, recent testnet tag for stability and compatibility.
+        # Based on mainnet-v1.48.2, testnet-v1.48.1 is a strong candidate.
+        # Always verify the chosen tag on https://github.com/MystenLabs/sui/releases
+        SUI_RELEASE_TAG="testnet-v1.48.1" # <--- ### VERIFY THIS TAG IS SUITABLE ###
         
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
         INSTALL_EXIT_CODE=$?
         if [ $INSTALL_EXIT_CODE -ne 0 ]; then
           echo "Error: cargo install for Sui (tag $SUI_RELEASE_TAG) failed with exit code $INSTALL_EXIT_CODE."
+          echo "This might be due to the chosen Sui tag not being compatible with the current Rust stable version, or the tag not existing."
+          echo "Please verify SUI_RELEASE_TAG is a recent and valid tag from https://github.com/MystenLabs/sui/releases"
           exit $INSTALL_EXIT_CODE
         fi
         echo "Successfully installed Sui from tag $SUI_RELEASE_TAG."
 
-        # Add cargo's bin directory to GITHUB_PATH
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         set +x
       shell: bash
@@ -51,10 +53,10 @@ jobs:
     - name: Verify Installation
       run: |
         sui --version
-        sui move --version # Correct way to check Move CLI version via Sui CLI
+        sui move --version
       shell: bash
 
-    - name: Build Project (Also Fetches Dependencies)
+    - name: Build Project
       run: |
         sui move build --path .
       shell: bash
@@ -81,15 +83,13 @@ jobs:
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Version)
+    - name: Install Sui Binaries using Cargo (Pinned Testnet Version)
       run: |
         set -e
         set -x
         echo "Installing Sui binaries using cargo with a pinned testnet tag for deployment..."
-        # IMPORTANT: Replace 'testnet-v1.25.0' with the latest suitable testnet release tag
-        # from https://github.com/MystenLabs/sui/releases
         # Ensure this tag MATCHES the tag used in the 'build' job for consistency.
-        SUI_RELEASE_TAG="testnet-v1.25.0" # <--- ### USER ACTION REQUIRED: UPDATE THIS TAG ###
+        SUI_RELEASE_TAG="testnet-v1.48.1" # <--- ### VERIFY THIS TAG IS SUITABLE ###
 
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
@@ -100,66 +100,4 @@ jobs:
         fi
         echo "Successfully installed Sui from tag $SUI_RELEASE_TAG for deployment."
 
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-        set +x
-      shell: bash
-
-    - name: Configure Sui Client for Deployment
-      env:
-        SUI_TESTNET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
-        SUI_DEPLOYER_PRIVATE_KEY_BASE64: ${{ secrets.SUI_DEPLOYER_PRIVATE_KEY_BASE64 }}
-        SUI_DEPLOYER_ALIAS: "testnet-deployer-ci"
-      run: |
-        set -e
-        set -x
-
-        echo "Setting up Sui client for Testnet deployment..."
-        mkdir -p $HOME/.sui/sui_config
-
-        if [ -n "$SUI_TESTNET_RPC_URL" ]; then
-          sui client new-env --alias ci-testnet --rpc "$SUI_TESTNET_RPC_URL"
-          sui client switch --env ci-testnet
-          echo "Switched to ci-testnet environment with RPC: $SUI_TESTNET_RPC_URL"
-        else
-          # Fallback to trying the default 'testnet' env if RPC URL secret is not provided
-          echo "Warning: SUI_TESTNET_RPC_URL secret not set. Attempting to use default 'testnet' environment."
-          sui client switch --env testnet || (echo "Error: Failed to switch to default 'testnet' env and no RPC URL provided." && exit 1)
-        fi
-
-        echo "Importing private key..."
-        if [ -z "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" ]; then
-          echo "Error: SUI_DEPLOYER_PRIVATE_KEY_BASE64 secret not set."
-          exit 1
-        fi
-
-        # Attempt to remove alias first to avoid error if it already exists from a previous run
-        sui client remove-alias "$SUI_DEPLOYER_ALIAS" || echo "Alias $SUI_DEPLOYER_ALIAS did not exist or could not be removed. Continuing..."
-
-        # Import the private key
-        echo "$SUI_DEPLOYER_PRIVATE_KEY_BASE64" | base64 --decode | sui client import-private-key --alias "$SUI_DEPLOYER_ALIAS"
-
-        # Switch active address to the newly imported alias
-        sui client switch --address "$SUI_DEPLOYER_ALIAS"
-        echo "Switched active address to $SUI_DEPLOYER_ALIAS"
-
-        echo "Verifying client configuration..."
-        sui client active-env
-        sui client active-address
-        sui client gas --json # Check if the address has gas coins
-        echo "Sui client setup complete."
-        set +x
-      shell: bash
-
-    - name: Deploy Contracts to Testnet
-      env:
-        # These ENVs might be used by your deploy.sh script if it expects them
-        SUI_TARGET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }} 
-        SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }} # Or the actual address if script needs it
-        SUI_GAS_COIN_ID_FOR_SCRIPT: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }}
-      run: |
-        chmod +x ./scripts/deploy.sh
-        echo "Executing deploy.sh script..."
-        # If your deploy.sh script doesn't internally handle client setup (like active address),
-        # ensure the client is correctly configured before this step from "Configure Sui Client" step.
-        ./scripts/deploy.sh
-      shell: bash
+        echo "$HOME/.
