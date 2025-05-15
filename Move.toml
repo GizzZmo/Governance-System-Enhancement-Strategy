@@ -1,9 +1,10 @@
+// MinimalTest/Move.toml
 [package]
 name = "MinimalTest"
 version = "0.0.1"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "testnet-v1.48.1" } # Or however you ensure this version
+# EMPTY! Let the build system auto-include Sui, MoveStdlib, Bridge, SuiSystem for the pinned Sui CLI version.
 
 [addresses]
 minimal_test_addr = "0x0"
