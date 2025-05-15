@@ -1,0 +1,457 @@
+Move Files (.rs)
+
+contracts/governance.rs
+contracts/delegation-staking.rs
+contracts/treasury.rs
+contracts/proposal-handler.rs
+tests/governance-tests.rs
+tests/staking-tests.rs
+tests/treasury-tests.rs
+scripts/governance-cli.rs
+Shell Scripts (.sh)
+
+scripts/deploy.sh
+deploy.sh
+Markdown Files (.md)
+
+docs/use_cases.md
+docs/README.md
+docs/governance-specs.md
+docs/staking-mechanics.md
+README.md
+SECURITY.md
+CONTRIBUTING.md
+YAML Files (.yml)
+
+.github/workflows/ci-deploy.yml
+.github/workflows/ci-cd.yml
+TOML Files (.toml)
+
+config/parameters.toml
+Text Files (.txt)
+
+howto.txt
+VisualAidsforGovernanceArchitecture.txt
+
+```move
+module Governance {
+    struct Proposal {
+        id: u64,
+        creator: address,
+        description: string,
+        proposal_type: u8,
+        votes_for: u128,
+        votes_against: u128,
+        veto_votes: u128,
+        quorum: u128,
+        executed: bool,
+    }
+
+    struct Voter {
+        address: address,
+        stake: u128,
+        delegate: option<address>,
+        reputation: u128,
+    }
+
+    public fun submit_proposal(creator: address, description: string, proposal_type: u8): u64 {
+        let proposal_id = generate_id();
+        let quorum = determine_quorum(proposal_type);
+        let new_proposal = Proposal { id: proposal_id, creator, description, proposal_type, votes_for: 0, votes_against: 0, veto_votes: 0, quorum, executed: false };
+        move_to(creator, new_proposal);
+        return proposal_id;
+    }
+
+    public fun hybrid_vote(proposal: &mut Proposal, voter: Voter, votes: u128, support: bool, veto: bool) {
+        let effective_votes = sqrt(votes);
+        let reputation_weight = 100 + voter.reputation / 100;
+        let final_votes = effective_votes * reputation_weight / 100;
+
+        let voting_address = voter.delegate.unwrap_or(voter.address);
+        assert!(voter.stake >= votes, "Insufficient stake");
+
+        if veto && proposal.proposal_type == 2 {
+            proposal.veto_votes += final_votes;
+        } else if support {
+            proposal.votes_for += final_votes;
+        } else {
+            proposal.votes_against += final_votes;
+        }
+    }
+
+    public fun execute_proposal(proposal: &mut Proposal) {
+        assert!(proposal.votes_for + proposal.votes_against >= proposal.quorum, "Quorum not met");
+        assert!(proposal.votes_for > proposal.votes_against, "Proposal rejected");
+        proposal.executed = true;
+    }
+
+    fun determine_quorum(proposal_type: u8) -> u128 {
+        match proposal_type {
+            0 => total_stake * 10 / 100,
+            1 => total_stake * 30 / 100,
+            2 => total_stake * 50 / 100,
+            _ => abort("Invalid proposal type"),
+        }
+    }
+
+    fun sqrt(x: u128) -> u128 {
+        let mut guess = x / 2;
+        while guess * guess > x {
+            guess = (guess + x / guess) / 2;
+        }
+        guess
+    }
+
+    native fun generate_id(): u64;
+    native fun total_stake(): u128;
+}
+```
+
+```move
+module DelegationStaking {
+    struct Validator {
+        address: address,
+        stake: u128,
+        delegated_stake: u128,
+        reputation: u128,
+        last_heartbeat: u64,
+    }
+
+    public fun initialize(account: &signer) {
+        assert!(!exists<Config>(signer::address(account)), "Module already initialized");
+        move_to(account, Config { min_stake: 1000 });
+    }
+
+    public fun delegate_stake(delegator: &signer, validator_address: address, amount: u64) {
+        assert!(exists<Config>(@0x0), "Module not initialized"); // Assuming config is stored under address 0x0
+        let config = borrow_global<Config>(@0x0);
+        assert!(amount >= config.min_stake, "Staking amount below minimum");
+
+        // Logic to transfer stake and update validator record (implementation details depend on the framework)
+        // ...
+    }
+
+    public fun update_reputation(validator_address: address, reputation_change: i64) {
+        if (exists<Validator>(validator_address)) {
+            let validator = borrow_global_mut<Validator>(validator_address);
+            // Implement logic to update reputation, potentially with bounds
+            validator.reputation = (validator.reputation as i64 + reputation_change) as u128;
+        }
+    }
+
+    public fun record_heartbeat(validator_address: address) {
+        if (exists<Validator>(validator_address)) {
+            let validator = borrow_global_mut<Validator>(validator_address);
+            validator.last_heartbeat = current_time(); // Assuming 'current_time()' is a native function
+        }
+    }
+
+    struct Config has key {
+        min_stake: u64,
+    }
+
+    native fun current_time(): u64;
+}
+```
+
+```move
+module Treasury {
+    struct Balance {
+        value: u128,
+    }
+
+    struct Approval {
+        proposal_id: u64,
+        amount: u128,
+        approver: address,
+    }
+
+    public fun initialize(account: &signer, initial_balance: u128) {
+        assert!(!exists<Balance>(signer::address(account)), "Treasury already initialized");
+        move_to(account, Balance { value: initial_balance });
+    }
+
+    public fun deposit(account: &signer, amount: u128) {
+        let treasury_address = signer::address(account); // Assuming treasury has its own address
+        if (exists<Balance>(treasury_address)) {
+            let balance = borrow_global_mut<Balance>(treasury_address);
+            balance.value = balance.value + amount;
+        } else {
+            move_to(account, Balance { value: amount });
+        }
+    }
+
+    public fun submit_withdrawal_proposal(proposer: address, proposal_id: u64, amount: u128) {
+        assert!(exists<Balance>(@0x0), "Treasury not initialized"); // Assuming treasury is at 0x0
+        // Logic to store the withdrawal proposal (implementation details depend on the framework)
+        // ...
+    }
+
+    public fun approve_withdrawal(approver: &signer, proposal_id: u64, amount: u128) {
+        let approver_address = signer::address(approver);
+        // Logic to record approval (e.g., store an 'Approval' struct)
+        move_to(approver, Approval { proposal_id, amount, approver: approver_address });
+    }
+
+    public fun execute_withdrawal(account: &signer, proposal_id: u64, required_approvals: u8) {
+        let treasury_address = signer::address(account);
+        assert!(exists<Balance>(treasury_address), "Treasury not initialized");
+        let balance = borrow_global_mut<Balance>(treasury_address);
+
+        // Logic to count approvals for the proposal
+        let approval_count = 0; // Placeholder for counting logic
+        // Iterate through stored 'Approval' structs for the given proposal_id
+
+        assert!(approval_count >= required_approvals as u64, "Insufficient approvals");
+
+        // Logic to transfer the funds (implementation details depend on the framework)
+        // ...
+        balance.value = balance.value - amount;
+        // Optionally, mark the proposal as executed
+    }
+}
+```
+
+```move
+module ProposalHandler {
+    // This module would contain logic to handle the execution of different proposal types.
+    // For example, upgrading contracts, modifying parameters, etc.
+
+    public fun handle_upgrade_contract(proposal_id: u64, new_contract_address: address) {
+        // Access necessary permissions and perform the contract upgrade
+        // ...
+        log("Contract upgraded", proposal_id, new_contract_address);
+    }
+
+    public fun handle_modify_parameter(proposal_id: u64, parameter_name: string, new_value: u64) {
+        // Access necessary permissions and modify the specified parameter
+        // ...
+        log("Parameter modified", proposal_id, parameter_name, new_value);
+    }
+
+    native fun log(message: string, proposal_id: u64, address: address);
+    native fun log(message: string, proposal_id: u64, parameter_name: string, new_value: u64);
+}
+```
+
+```move
+#[test_only]
+module GovernanceTests {
+    use std::signer;
+    use sui::object::{Self, UID};
+    use sui::tx_context::{Self, TxContext};
+
+    use super::*;
+
+    #[test]
+    fun test_submit_proposal() {
+        let creator = signer::test_signer(1);
+        let description = string::utf8(b"Test proposal");
+        let proposal_type = 0;
+
+        let proposal_id = Governance::submit_proposal(
+            signer::address(&creator),
+            description,
+            proposal_type,
+        );
+
+        let proposal = borrow_global<Proposal>(signer::address(&creator));
+        assert!(proposal.id == proposal_id, "Proposal ID mismatch");
+        assert!(proposal.creator == signer::address(&creator), "Creator mismatch");
+        assert!(proposal.description == string::utf8(b"Test proposal"), "Description mismatch");
+        assert!(proposal.proposal_type == 0, "Proposal type mismatch");
+        assert!(!proposal.executed, "Proposal should not be executed");
+    }
+
+    #[test]
+    fun test_hybrid_vote() {
+        let voter_address = signer::address(2);
+        let voter = Voter {
+            address: voter_address,
+            stake: 1000,
+            delegate: option::none(),
+            reputation: 50,
+        };
+        move_to(&signer::test_signer(2), voter);
+
+        let creator = signer::test_signer(1);
+        let description = string::utf8(b"Test proposal");
+        let proposal_type = 0;
+        let proposal_id = Governance::submit_proposal(
+            signer::address(&creator),
+            description,
+            proposal_type,
+        );
+        let proposal = borrow_global_mut<Proposal>(signer::address(&creator));
+
+        let voter_from_store = borrow_global<Voter>(voter_address);
+        Governance::hybrid_vote(&mut proposal, voter_from_store, 100, true, false);
+        assert!(proposal.votes_for > 0, "Votes for should be greater than 0");
+    }
+
+    #[test]
+    fun test_execute_proposal() {
+        let creator = signer::test_signer(1);
+        let description = string::utf8(b"Test proposal");
+        let proposal_type = 0;
+        let proposal_id = Governance::submit_proposal(
+            signer::address(&creator),
+            description,
+            proposal_type,
+        );
+        let proposal = borrow_global_mut<Proposal>(signer::address(&creator));
+        proposal.votes_for = Governance::total_stake(); // Mock enough votes
+        Governance::execute_proposal(&mut proposal);
+        assert!(proposal.executed, "Proposal should be executed");
+    }
+
+    // Mock native functions for testing
+    native fun generate_id(): u64 {
+        return 1;
+    }
+
+    native fun total_stake(): u128 {
+        return 10000;
+    }
+}
+```
+
+```move
+#[test_only]
+module StakingTests {
+    use std::signer;
+    use sui::object::{Self, UID};
+    use sui::tx_context::{Self, TxContext};
+
+    use super::*;
+
+    #[test]
+    fun test_initialize() {
+        let admin = signer::test_signer(1);
+        DelegationStaking::initialize(&admin);
+        assert!(exists<Config>(signer::address(&admin)), "Config should be initialized");
+        let config = borrow_global<Config>(signer::address(&admin));
+        assert!(config.min_stake == 1000, "Minimum stake should be 1000");
+    }
+
+    #[test]
+    fun test_delegate_stake() {
+        let admin = signer::test_signer(1);
+        DelegationStaking::initialize(&admin);
+
+        let delegator = signer::test_signer(2);
+        let validator_address = signer::address(&signer::test_signer(3));
+        let stake_amount = 2000;
+
+        // Need a way to mock validator existence and stake updates
+        // This test requires more framework-specific mocking capabilities
+        // DelegationStaking::delegate_stake(&delegator, validator_address, stake_amount);
+        // assert!(/* check delegator stake and validator delegated stake */, "Stake not delegated");
+    }
+
+    #[test]
+    fun test_update_reputation() {
+        let validator_address = signer::address(&signer::test_signer(1));
+        move_to(&signer::test_signer(1), Validator {
+            address: validator_address,
+            stake: 1000,
+            delegated_stake: 0,
+            reputation: 100,
+            last_heartbeat: 0,
+        });
+
+        DelegationStaking::update_reputation(validator_address, 10);
+        let validator = borrow_global<Validator>(validator_address);
+        assert!(validator.reputation == 110, "Reputation not updated correctly");
+
+        DelegationStaking::update_reputation(validator_address, -20);
+        let updated_validator = borrow_global<Validator>(validator_address);
+        assert!(updated_validator.reputation == 90, "Reputation not updated correctly with negative change");
+    }
+
+    #[test]
+    fun test_record_heartbeat() {
+        let validator_address = signer::address(&signer::test_signer(1));
+        move_to(&signer::test_signer(1), Validator {
+            address: validator_address,
+            stake: 1000,
+            delegated_stake: 0,
+            reputation: 100,
+            last_heartbeat: 0,
+        });
+
+        DelegationStaking::record_heartbeat(validator_address);
+        let validator = borrow_global<Validator>(validator_address);
+        assert!(validator.last_heartbeat == current_time(), "Heartbeat not recorded");
+    }
+
+    // Mock native function for testing
+    native fun current_time(): u64 {
+        return 100;
+    }
+}
+```
+
+```move
+#[test_only]
+module TreasuryTests {
+    use std::signer;
+    use sui::object::{Self, UID};
+    use sui::tx_context::{Self, TxContext};
+
+    use super::*;
+
+    #[test]
+    fun test_initialize() {
+        let admin = signer::test_signer(1);
+        let initial_balance = 1000000;
+        Treasury::initialize(&admin, initial_balance);
+        assert!(exists<Balance>(signer::address(&admin)), "Treasury balance should exist");
+        let balance = borrow_global<Balance>(signer::address(&admin));
+        assert!(balance.value == initial_balance, "Initial balance mismatch");
+    }
+
+    #[test]
+    fun test_deposit() {
+        let admin = signer::test_signer(1);
+        Treasury::initialize(&admin, 1000);
+        Treasury::deposit(&admin, 500);
+        let balance = borrow_global<Balance>(signer::address(&admin));
+        assert!(balance.value == 1500, "Deposit failed");
+
+        let other_account = signer::test_signer(2);
+        Treasury::deposit(&other_account, 200);
+        let other_balance = borrow_global<Balance>(signer::address(&other_account));
+        assert!(other_balance.value == 200, "Deposit to new account failed");
+    }
+
+    #[test]
+    fun test_submit_withdrawal_proposal() {
+        let proposer = signer::test_signer(1);
+        let proposal_id = 1;
+        let amount = 500;
+        // Need to initialize treasury first (assuming @0x0 for simplicity in test)
+        move_to(&signer::test_signer(0), Balance { value: 10000 });
+        Treasury::submit_withdrawal_proposal(signer::address(&proposer), proposal_id, amount);
+        // Need a way to verify the proposal was stored (implementation details depend on the framework)
+        // assert!(/* proposal exists */, "Withdrawal proposal not submitted");
+    }
+
+    #[test]
+    fun test_approve_withdrawal() {
+        let approver = signer::test_signer(1);
+        let proposal_id = 1;
+        let amount = 500;
+        Treasury::approve_withdrawal(&approver, proposal_id, amount);
+        let approval = borrow_global<Approval>(signer::address(&approver));
+        assert!(approval.proposal_id == proposal_id, "Proposal ID mismatch in approval");
+        assert!(approval.amount == amount, "Approval amount mismatch");
+        assert!(approval.approver == signer::address(&approver), "Approver mismatch");
+    }
+
+    #[test]
+    fun test_execute_withdrawal() {
+        let admin = signer::test_signer(1);
+        Treasury::initialize(&admin, 1000);
+        let proposal_
+```
