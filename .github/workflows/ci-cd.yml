@@ -57,14 +57,14 @@ jobs:
 
     - name: Build Project
       env:
-        RUST_BACKTRACE: 1 # Enable full backtrace for panics
+        RUST_BACKTRACE: full # Enable full backtrace for panics
       run: |
         sui move build --path . 
       shell: bash
 
     - name: Run Tests
       env:
-        RUST_BACKTRACE: 1 # Enable full backtrace for panics
+        RUST_BACKTRACE: full # Enable full backtrace for panics
       run: |
         sui move test --path .
       shell: bash
