@@ -10,43 +10,37 @@ on:
 
 jobs:
   build:
-    name: Build and Test
+    name: Build and Test (Rust 1.86.0, Sui testnet-v1.48.1)
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Setup Rust toolchain
+    - name: Setup Rust toolchain (Pin to 1.86.0)
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: stable # This will use the latest stable Rust (e.g., 1.80.0+)
+        toolchain: "1.86.0" # Pinning to a specific stable Rust version
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Version)
+    - name: Install Sui Binaries using Cargo (Pinned Testnet Version)
       run: |
         set -e 
         set -x 
 
-        echo "Installing Sui binaries using cargo with a pinned testnet tag..."
-        # ------------------------------------------------------------------------------------
-        # ### CRITICAL USER ACTION REQUIRED ###
-        # The tag below ('testnet-vX.Y.Z-EXAMPLE') is a PLACEHOLDER.
-        # You MUST replace it with the LATEST SUITABLE 'testnet-vX.Y.Z' release tag 
-        # from the official Sui GitHub releases: https://github.com/MystenLabs/sui/releases
-        # A more recent tag is more likely to be compatible with the current stable Rust.
-        # Example: If the latest suitable tag is 'testnet-v1.29.0', use that.
-        SUI_RELEASE_TAG="testnet-v1.29.0" # <--- ### UPDATE THIS TAG!!! ###
-        # ------------------------------------------------------------------------------------
+        echo "Installing Sui binaries using cargo with pinned tag testnet-v1.48.1..."
+        # Using a specific, recent testnet tag known to compile with Rust 1.86.0
+        # This setup is intended to reproduce the 0xb::crypto error post-installation.
+        SUI_RELEASE_TAG="testnet-v1.48.1" 
         
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
         INSTALL_EXIT_CODE=$?
         if [ $INSTALL_EXIT_CODE -ne 0 ]; then
           echo "Error: cargo install for Sui (tag $SUI_RELEASE_TAG) failed with exit code $INSTALL_EXIT_CODE."
-          echo "This might be due to the chosen Sui tag not being compatible with the current Rust stable version."
-          echo "Please ensure SUI_RELEASE_TAG is a recent and valid tag from https://github.com/MystenLabs/sui/releases"
+          echo "This might be due to the tag not existing, being mistyped, or an incompatibility with the current Rust version."
+          echo "Please ensure SUI_RELEASE_TAG is a valid tag from https://github.com/MystenLabs/sui/releases"
           exit $INSTALL_EXIT_CODE
         fi
         echo "Successfully installed Sui from tag $SUI_RELEASE_TAG."
@@ -57,22 +51,31 @@ jobs:
 
     - name: Verify Installation
       run: |
+        rustc --version # To confirm Rust version
+        cargo --version   # To confirm Cargo version
         sui --version
         sui move --version
       shell: bash
 
     - name: Build Project
+      env:
+        RUST_BACKTRACE: 1 # Enable full backtrace for panics
       run: |
-        sui move build --path .
+        # This step should build your MinimalTest project (or current project at --path .)
+        sui move build --path . 
       shell: bash
 
     - name: Run Tests
+      env:
+        RUST_BACKTRACE: 1 # Enable full backtrace for panics
       run: |
+        # This is where the "Duplicate module found: 0xb::crypto" error
+        # has been observed with the MinimalTest project with this Sui/Rust combo.
         sui move test --path .
       shell: bash
 
   deploy_to_testnet:
-    name: Deploy to Testnet
+    name: Deploy to Testnet (Rust 1.86.0, Sui testnet-v1.48.1)
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -81,24 +84,20 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Setup Rust toolchain
+    - name: Setup Rust toolchain (Pin to 1.86.0)
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: stable
+        toolchain: "1.86.0" # Pinning to a specific stable Rust version
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Version)
+    - name: Install Sui Binaries using Cargo (Pinned Testnet Version)
       run: |
         set -e
         set -x
-        echo "Installing Sui binaries using cargo with a pinned testnet tag for deployment..."
-        # ------------------------------------------------------------------------------------
-        # ### CRITICAL USER ACTION REQUIRED ###
+        echo "Installing Sui binaries using cargo with pinned tag testnet-v1.48.1 for deployment..."
         # Ensure this tag MATCHES the tag used in the 'build' job for consistency.
-        # Replace with the LATEST SUITABLE 'testnet-vX.Y.Z' release tag.
-        SUI_RELEASE_TAG="testnet-vX.Y.Z-EXAMPLE" # <--- ### UPDATE THIS TAG!!! ###
-        # ------------------------------------------------------------------------------------
+        SUI_RELEASE_TAG="testnet-v1.48.1" 
 
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
@@ -112,13 +111,18 @@ jobs:
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         set +x
       shell: bash
+      
+    - name: Verify Versions in Deploy Job
+      run: |
+        rustc --version
+        sui --version 
+      shell: bash
 
     - name: Configure Sui Client for Deployment
       env:
         SUI_TESTNET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
         SUI_DEPLOYER_PRIVATE_KEY_BASE64: ${{ secrets.SUI_DEPLOYER_PRIVATE_KEY_BASE64 }}
         SUI_DEPLOYER_ALIAS: "testnet-deployer-ci"
-      # ... (rest of the client configuration script remains the same)
       run: |
         set -e
         set -x
@@ -156,12 +160,14 @@ jobs:
 
     - name: Deploy Contracts to Testnet
       env:
+        RUST_BACKTRACE: 1 
         SUI_TARGET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }} 
         SUI_DEPLOYER_ADDRESS_FOR_SCRIPT: ${{ env.SUI_DEPLOYER_ALIAS }} 
         SUI_GAS_COIN_ID_FOR_SCRIPT: ${{ secrets.SUI_GAS_OBJECT_ID_TESTNET }}
-      # ... (rest of the deployment script execution remains the same)
       run: |
         chmod +x ./scripts/deploy.sh
         echo "Executing deploy.sh script..."
+        # This deploy.sh script will use the Sui tools (testnet-v1.48.1) installed above.
+        # If it performs a build, that build will also use these tools.
         ./scripts/deploy.sh
       shell: bash
