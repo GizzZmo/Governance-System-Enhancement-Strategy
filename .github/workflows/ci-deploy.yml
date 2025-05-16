@@ -37,7 +37,7 @@ jobs:
         # from the official Sui GitHub releases: https://github.com/MystenLabs/sui/releases
         # A more recent tag is more likely to be compatible with the current stable Rust.
         # Example: If the latest suitable tag is 'testnet-v1.29.0', use that.
-        SUI_RELEASE_TAG="testnet-vX.Y.Z-EXAMPLE" # <--- ### UPDATE THIS TAG!!! ###
+        SUI_RELEASE_TAG="testnet-v1.29.0" # <--- ### UPDATE THIS TAG!!! ###
         # ------------------------------------------------------------------------------------
         
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
