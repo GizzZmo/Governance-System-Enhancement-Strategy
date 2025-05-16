@@ -1,1 +1,6 @@
-module minimal_test_addr::minimal_module { /* can be empty or trivial init */ }
+module minimal_test_addr::minimal_module {
+    #[test]
+    fun test_passes_trivially() {
+        assert!(true, 0);
+    }
+}
