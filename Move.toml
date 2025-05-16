@@ -1,7 +1,15 @@
-// minimal_module.move
-module minimal_test_addr::minimal_module {
-    #[test]
-    fun test_nothing() {
-        assert!(true, 0);
-    }
-}
+# File: Move.toml (for your MinimalTest package)
+
+[package]
+name = "MinimalTest" 
+version = "0.0.1"
+# edition = "2024.beta" # Optional: if you want to use a specific Move edition
+
+[dependencies]
+# This section should be EMPTY for standard Sui framework dependencies.
+# The Sui CLI (pinned to mainnet-v1.48.2 in your CI) will automatically 
+# provide Sui, MoveStdlib, Bridge, SuiSystem, etc.
+
+[addresses]
+minimal_test_addr = "0x0" 
+# Or whatever you named the address for your minimal_module.move
