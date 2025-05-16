@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    name: Build and Test (with Rust 1.86.0)
+    name: Build and Test (Rust 1.86.0, Sui testnet-v1.48.1)
     runs-on: ubuntu-latest
 
     steps:
@@ -24,14 +24,13 @@ jobs:
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Mainnet Version)
+    - name: Install Sui Binaries using Cargo (Pinned Testnet Version)
       run: |
         set -e 
         set -x 
 
-        echo "Installing Sui binaries using cargo with pinned tag mainnet-v1.48.2..."
-        # Using the specific mainnet tag as per user request.
-        SUI_RELEASE_TAG="testnet-v1.48.1" 
+        echo "Installing Sui binaries using cargo with pinned tag testnet-v1.48.1..."
+        SUI_RELEASE_TAG="testnet-v1.48.1" # Using a specific testnet tag
         
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
@@ -70,8 +69,8 @@ jobs:
         sui move test --path .
       shell: bash
 
-  deploy_to_testnet: # Note: Deploying to Testnet with Mainnet tools
-    name: Deploy to Testnet (with Rust 1.86.0 & Mainnet Sui tools)
+  deploy_to_testnet:
+    name: Deploy to Testnet (Rust 1.86.0, Sui testnet-v1.48.1)
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -87,13 +86,13 @@ jobs:
         profile: minimal
         override: true
 
-    - name: Install Sui Binaries using Cargo (Pinned Mainnet Version)
+    - name: Install Sui Binaries using Cargo (Pinned Testnet Version)
       run: |
         set -e
         set -x
-        echo "Installing Sui binaries using cargo with pinned tag mainnet-v1.48.2 for deployment..."
+        echo "Installing Sui binaries using cargo with pinned tag testnet-v1.48.1 for deployment..."
         # Ensure this tag MATCHES the tag used in the 'build' job for consistency.
-        SUI_RELEASE_TAG="mainnet-v1.48.2"
+        SUI_RELEASE_TAG="testnet-v1.48.1" # Using a specific testnet tag
 
         cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$SUI_RELEASE_TAG" sui
         
@@ -111,6 +110,7 @@ jobs:
     - name: Verify Rust Version in Deploy Job
       run: |
         rustc --version
+        sui --version # Also verify Sui version consistency here
       shell: bash
 
     - name: Configure Sui Client for Deployment
