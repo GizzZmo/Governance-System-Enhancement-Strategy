@@ -10,7 +10,6 @@ module hybrid_governance_pkg::delegation {
         id: ID,
         delegator: address,
         delegatee: address,
-        // Optional: when was this set
     }
 
     /// Global book of all delegations
