@@ -6,6 +6,8 @@ version = "0.0.1"
 # edition = "2024.beta" # Optional: if you want to use a specific Move edition
 
 [dependencies]
+MoveStdlib = { git = "https://github.com/move-language/move", rev = "..." }
+Sui = { git = "https://github.com/MystenLabs/sui", rev = "..." }
 # This section should be EMPTY for standard Sui framework dependencies.
 # The Sui CLI (pinned to mainnet-v1.48.2 in your CI) will automatically 
 # provide Sui, MoveStdlib, Bridge, SuiSystem, etc.
