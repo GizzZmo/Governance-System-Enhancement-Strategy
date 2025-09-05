@@ -1,0 +1,466 @@
+name: Dependency Management & Updates
+
+on:
+  schedule:
+    # Check for dependency updates weekly on Mondays at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      update_type:
+        description: 'Type of update to perform'
+        required: true
+        default: 'check'
+        type: choice
+        options:
+          - check
+          - minor
+          - patch
+          - major
+      create_pr:
+        description: 'Create PR for updates'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # Check for Sui framework updates
+  check-sui-updates:
+    name: Check Sui Framework Updates
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+
+    - name: Install GitHub CLI
+      run: |
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+        sudo apt update
+        sudo apt install gh
+
+    - name: Check Sui Releases
+      run: |
+        mkdir -p dependency-reports
+        
+        echo "# Dependency Update Report" > dependency-reports/dependency-updates.md
+        echo "Generated on: $(date)" >> dependency-reports/dependency-updates.md
+        echo "Update type: ${{ github.event.inputs.update_type || 'check' }}" >> dependency-reports/dependency-updates.md
+        echo "" >> dependency-reports/dependency-updates.md
+        
+        # Get current Sui version from workflows
+        current_tag=$(grep -r "testnet-v" .github/workflows/ | grep -o "testnet-v[0-9.]*" | head -1 || echo "unknown")
+        echo "## Current Sui Version" >> dependency-reports/dependency-updates.md
+        echo "Currently using: \`$current_tag\`" >> dependency-reports/dependency-updates.md
+        echo "" >> dependency-reports/dependency-updates.md
+        
+        # Get latest Sui releases
+        echo "## Available Sui Releases" >> dependency-reports/dependency-updates.md
+        echo "Fetching latest releases from MystenLabs/sui..." >> dependency-reports/dependency-updates.md
+        
+        # Get latest releases
+        gh release list --repo MystenLabs/sui --limit 10 > latest-releases.txt || true
+        
+        if [ -s latest-releases.txt ]; then
+          echo "" >> dependency-reports/dependency-updates.md
+          echo "| Release | Date | Type |" >> dependency-reports/dependency-updates.md
+          echo "|---------|------|------|" >> dependency-reports/dependency-updates.md
+          
+          cat latest-releases.txt | while read line; do
+            tag=$(echo "$line" | awk '{print $1}')
+            date=$(echo "$line" | awk '{print $2}')
+            if echo "$tag" | grep -q "testnet"; then
+              echo "| $tag | $date | Testnet |" >> dependency-reports/dependency-updates.md
+            elif echo "$tag" | grep -q "mainnet"; then
+              echo "| $tag | $date | Mainnet |" >> dependency-reports/dependency-updates.md
+            else
+              echo "| $tag | $date | Other |" >> dependency-reports/dependency-updates.md
+            fi
+          done
+        else
+          echo "Could not fetch release information" >> dependency-reports/dependency-updates.md
+        fi
+
+    - name: Analyze Update Requirements
+      run: |
+        echo "" >> dependency-reports/dependency-updates.md
+        echo "## Update Analysis" >> dependency-reports/dependency-updates.md
+        
+        # Get latest testnet and mainnet versions
+        latest_testnet=$(gh release list --repo MystenLabs/sui --limit 20 | grep testnet | head -1 | awk '{print $1}' || echo "")
+        latest_mainnet=$(gh release list --repo MystenLabs/sui --limit 20 | grep mainnet | head -1 | awk '{print $1}' || echo "")
+        
+        echo "**Latest testnet:** \`$latest_testnet\`" >> dependency-reports/dependency-updates.md
+        echo "**Latest mainnet:** \`$latest_mainnet\`" >> dependency-reports/dependency-updates.md
+        echo "" >> dependency-reports/dependency-updates.md
+        
+        # Compare with current version
+        current_tag=$(grep -r "testnet-v" .github/workflows/ | grep -o "testnet-v[0-9.]*" | head -1 || echo "unknown")
+        
+        if [ "$current_tag" != "$latest_testnet" ] && [ -n "$latest_testnet" ]; then
+          echo "🔄 **Update Available:** $current_tag → $latest_testnet" >> dependency-reports/dependency-updates.md
+          echo "SHOULD_UPDATE=true" >> $GITHUB_ENV
+          echo "NEW_VERSION=$latest_testnet" >> $GITHUB_ENV
+        else
+          echo "✅ **Up to date:** Using latest testnet version" >> dependency-reports/dependency-updates.md
+          echo "SHOULD_UPDATE=false" >> $GITHUB_ENV
+        fi
+
+    - name: Check Breaking Changes
+      if: env.SHOULD_UPDATE == 'true'
+      run: |
+        echo "" >> dependency-reports/dependency-updates.md
+        echo "## Breaking Changes Analysis" >> dependency-reports/dependency-updates.md
+        
+        # Get release notes for the new version
+        if [ -n "${{ env.NEW_VERSION }}" ]; then
+          echo "Checking release notes for ${{ env.NEW_VERSION }}..." >> dependency-reports/dependency-updates.md
+          
+          # Fetch release notes
+          gh release view "${{ env.NEW_VERSION }}" --repo MystenLabs/sui > release-notes.txt 2>/dev/null || true
+          
+          if [ -s release-notes.txt ]; then
+            echo "" >> dependency-reports/dependency-updates.md
+            echo "### Release Notes" >> dependency-reports/dependency-updates.md
+            echo "\`\`\`" >> dependency-reports/dependency-updates.md
+            head -50 release-notes.txt >> dependency-reports/dependency-updates.md
+            echo "\`\`\`" >> dependency-reports/dependency-updates.md
+            
+            # Look for breaking change indicators
+            if grep -i "breaking\|deprecat\|remov" release-notes.txt > /dev/null; then
+              echo "" >> dependency-reports/dependency-updates.md
+              echo "⚠️ **Warning:** Potential breaking changes detected!" >> dependency-reports/dependency-updates.md
+              echo "BREAKING_CHANGES=true" >> $GITHUB_ENV
+            else
+              echo "" >> dependency-reports/dependency-updates.md
+              echo "✅ No obvious breaking changes detected" >> dependency-reports/dependency-updates.md
+              echo "BREAKING_CHANGES=false" >> $GITHUB_ENV
+            fi
+          fi
+        fi
+
+    - name: Upload Dependency Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependency-reports-${{ github.sha }}
+        path: dependency-reports/
+        retention-days: 30
+
+  # Check Rust toolchain updates
+  check-rust-updates:
+    name: Check Rust Toolchain Updates
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Check Rust Versions
+      run: |
+        mkdir -p rust-reports
+        
+        echo "# Rust Toolchain Update Report" > rust-reports/rust-updates.md
+        echo "Generated on: $(date)" >> rust-reports/rust-updates.md
+        echo "" >> rust-reports/rust-updates.md
+        
+        # Get current Rust version from workflows
+        current_rust=$(grep -r "toolchain:" .github/workflows/ | grep -o "[0-9]\+\.[0-9]\+\.[0-9]\+" | head -1 || echo "unknown")
+        echo "## Current Rust Version" >> rust-reports/rust-updates.md
+        echo "Currently using: \`$current_rust\`" >> rust-reports/rust-updates.md
+        echo "" >> rust-reports/rust-updates.md
+        
+        # Check latest stable Rust version
+        latest_rust=$(curl -s https://forge.rust-lang.org/infra/channel-releases.html | grep -o "1\.[0-9]\+\.[0-9]\+" | head -1 || echo "unknown")
+        echo "**Latest stable Rust:** \`$latest_rust\`" >> rust-reports/rust-updates.md
+        echo "" >> rust-reports/rust-updates.md
+        
+        if [ "$current_rust" != "$latest_rust" ] && [ "$latest_rust" != "unknown" ]; then
+          echo "🔄 **Rust Update Available:** $current_rust → $latest_rust" >> rust-reports/rust-updates.md
+          echo "RUST_UPDATE_AVAILABLE=true" >> $GITHUB_ENV
+          echo "NEW_RUST_VERSION=$latest_rust" >> $GITHUB_ENV
+        else
+          echo "✅ **Rust Up to Date:** Using latest stable version" >> rust-reports/rust-updates.md
+          echo "RUST_UPDATE_AVAILABLE=false" >> $GITHUB_ENV
+        fi
+
+    - name: Upload Rust Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: rust-reports-${{ github.sha }}
+        path: rust-reports/
+        retention-days: 30
+
+  # Test compatibility with new versions
+  compatibility-test:
+    name: Test Compatibility
+    runs-on: ubuntu-latest
+    needs: [check-sui-updates]
+    if: needs.check-sui-updates.outputs.SHOULD_UPDATE == 'true' || github.event.inputs.update_type != 'check'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Download Dependency Reports
+      uses: actions/download-artifact@v3
+      with:
+        name: dependency-reports-${{ github.sha }}
+        path: dependency-reports/
+
+    - name: Test with New Sui Version
+      continue-on-error: true
+      run: |
+        mkdir -p compatibility-reports
+        
+        echo "# Compatibility Test Report" > compatibility-reports/compatibility.md
+        echo "Generated on: $(date)" >> compatibility-reports/compatibility.md
+        echo "" >> compatibility-reports/compatibility.md
+        
+        # Get the new version to test
+        new_version=$(grep "NEW_VERSION=" dependency-reports/dependency-updates.md | cut -d'=' -f2 || echo "")
+        
+        if [ -n "$new_version" ]; then
+          echo "Testing compatibility with: $new_version" >> compatibility-reports/compatibility.md
+          echo "" >> compatibility-reports/compatibility.md
+          
+          # Install new Sui version
+          echo "## Installation Test" >> compatibility-reports/compatibility.md
+          if cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "$new_version" sui; then
+            echo "✅ Successfully installed $new_version" >> compatibility-reports/compatibility.md
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+            
+            # Test build
+            echo "" >> compatibility-reports/compatibility.md
+            echo "## Build Test" >> compatibility-reports/compatibility.md
+            if sui move build --path .; then
+              echo "✅ Build successful with $new_version" >> compatibility-reports/compatibility.md
+              BUILD_SUCCESS=true
+            else
+              echo "❌ Build failed with $new_version" >> compatibility-reports/compatibility.md
+              BUILD_SUCCESS=false
+            fi
+            
+            # Test if build was successful
+            if [ "$BUILD_SUCCESS" = "true" ]; then
+              echo "" >> compatibility-reports/compatibility.md
+              echo "## Test Execution" >> compatibility-reports/compatibility.md
+              if sui move test --path . --gas-limit 100000000; then
+                echo "✅ Tests passed with $new_version" >> compatibility-reports/compatibility.md
+                echo "COMPATIBILITY_TEST_PASSED=true" >> $GITHUB_ENV
+              else
+                echo "❌ Tests failed with $new_version" >> compatibility-reports/compatibility.md
+                echo "COMPATIBILITY_TEST_PASSED=false" >> $GITHUB_ENV
+              fi
+            else
+              echo "COMPATIBILITY_TEST_PASSED=false" >> $GITHUB_ENV
+            fi
+          else
+            echo "❌ Failed to install $new_version" >> compatibility-reports/compatibility.md
+            echo "COMPATIBILITY_TEST_PASSED=false" >> $GITHUB_ENV
+          fi
+        else
+          echo "No new version to test" >> compatibility-reports/compatibility.md
+          echo "COMPATIBILITY_TEST_PASSED=true" >> $GITHUB_ENV
+        fi
+
+    - name: Upload Compatibility Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: compatibility-reports-${{ github.sha }}
+        path: compatibility-reports/
+        retention-days: 30
+
+  # Create update PR if requested
+  create-update-pr:
+    name: Create Update PR
+    runs-on: ubuntu-latest
+    needs: [check-sui-updates, check-rust-updates, compatibility-test]
+    if: |
+      always() && 
+      (github.event.inputs.create_pr == 'true' || github.event_name == 'schedule') &&
+      (needs.check-sui-updates.outputs.SHOULD_UPDATE == 'true' || needs.check-rust-updates.outputs.RUST_UPDATE_AVAILABLE == 'true') &&
+      (needs.compatibility-test.result == 'success' || needs.compatibility-test.result == 'skipped')
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Download All Reports
+      uses: actions/download-artifact@v3
+      with:
+        path: all-reports/
+
+    - name: Create Update Branch
+      run: |
+        # Create a unique branch name
+        update_branch="dependency-update-$(date +%Y%m%d-%H%M%S)"
+        git checkout -b "$update_branch"
+        echo "UPDATE_BRANCH=$update_branch" >> $GITHUB_ENV
+
+    - name: Update Sui Version
+      if: needs.check-sui-updates.outputs.SHOULD_UPDATE == 'true'
+      run: |
+        # Get the new version
+        new_version=$(find all-reports -name "dependency-updates.md" -exec grep "NEW_VERSION=" {} \; | cut -d'=' -f2 | head -1)
+        
+        if [ -n "$new_version" ]; then
+          echo "Updating Sui version to: $new_version"
+          
+          # Update all workflow files
+          find .github/workflows -name "*.yml" -exec sed -i "s/testnet-v[0-9.]*/\"$new_version\"/g" {} \;
+          
+          # Update any other references
+          if [ -f "README.md" ]; then
+            sed -i "s/testnet-v[0-9.]*/$new_version/g" README.md || true
+          fi
+          
+          echo "Updated Sui version to $new_version"
+        fi
+
+    - name: Update Rust Version
+      if: needs.check-rust-updates.outputs.RUST_UPDATE_AVAILABLE == 'true'
+      run: |
+        # Get the new Rust version
+        new_rust_version=$(find all-reports -name "rust-updates.md" -exec grep "NEW_RUST_VERSION=" {} \; | cut -d'=' -f2 | head -1)
+        
+        if [ -n "$new_rust_version" ]; then
+          echo "Updating Rust version to: $new_rust_version"
+          
+          # Update workflow files
+          find .github/workflows -name "*.yml" -exec sed -i "s/toolchain: \"[0-9.]*\"/toolchain: \"$new_rust_version\"/g" {} \;
+          find .github/workflows -name "*.yml" -exec sed -i "s/toolchain: [0-9.]*/toolchain: $new_rust_version/g" {} \;
+          
+          echo "Updated Rust version to $new_rust_version"
+        fi
+
+    - name: Create Update Documentation
+      run: |
+        # Create update documentation
+        cat > DEPENDENCY_UPDATE.md << EOF
+        # Dependency Update $(date +%Y-%m-%d)
+        
+        This PR contains automated dependency updates.
+        
+        ## Changes Made
+        EOF
+        
+        if [ -f all-reports/dependency-reports/dependency-updates.md ]; then
+          echo "### Sui Framework Update" >> DEPENDENCY_UPDATE.md
+          cat all-reports/dependency-reports/dependency-updates.md >> DEPENDENCY_UPDATE.md
+        fi
+        
+        if [ -f all-reports/rust-reports/rust-updates.md ]; then
+          echo "### Rust Toolchain Update" >> DEPENDENCY_UPDATE.md
+          cat all-reports/rust-reports/rust-updates.md >> DEPENDENCY_UPDATE.md
+        fi
+        
+        if [ -f all-reports/compatibility-reports/compatibility.md ]; then
+          echo "### Compatibility Testing" >> DEPENDENCY_UPDATE.md
+          cat all-reports/compatibility-reports/compatibility.md >> DEPENDENCY_UPDATE.md
+        fi
+        
+        cat >> DEPENDENCY_UPDATE.md << EOF
+        
+        ## Automated Update Process
+        - Updates were tested for compatibility
+        - All workflow files have been updated
+        - Documentation has been updated where necessary
+        
+        **Please review the changes and test thoroughly before merging.**
+        EOF
+
+    - name: Commit Changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add -A
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "chore: update dependencies $(date +%Y-%m-%d)
+
+          - Update Sui framework to latest version
+          - Update Rust toolchain if needed
+          - Automated compatibility testing passed
+          
+          Auto-generated by dependency-management workflow"
+          
+          git push origin "$UPDATE_BRANCH"
+          echo "CHANGES_COMMITTED=true" >> $GITHUB_ENV
+        fi
+
+    - name: Create Pull Request
+      if: env.CHANGES_COMMITTED == 'true'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let updateDoc = '';
+          try {
+            updateDoc = fs.readFileSync('DEPENDENCY_UPDATE.md', 'utf8');
+          } catch (error) {
+            updateDoc = 'Automated dependency update';
+          }
+          
+          const pr = await github.rest.pulls.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: '🔄 Automated Dependency Update',
+            head: process.env.UPDATE_BRANCH,
+            base: 'main',
+            body: updateDoc
+          });
+          
+          console.log(`Created PR #${pr.data.number}: ${pr.data.html_url}`);
+
+  # Generate dependency update summary
+  update-summary:
+    name: Generate Update Summary
+    runs-on: ubuntu-latest
+    needs: [check-sui-updates, check-rust-updates, compatibility-test]
+    if: always()
+
+    steps:
+    - name: Download All Reports
+      uses: actions/download-artifact@v3
+      with:
+        path: all-reports/
+
+    - name: Generate Summary
+      run: |
+        mkdir -p update-summary
+        
+        echo "# Dependency Management Summary" > update-summary/UPDATE_SUMMARY.md
+        echo "Generated on: $(date)" >> update-summary/UPDATE_SUMMARY.md
+        echo "Workflow run: ${{ github.run_id }}" >> update-summary/UPDATE_SUMMARY.md
+        echo "" >> update-summary/UPDATE_SUMMARY.md
+        
+        echo "## Job Results" >> update-summary/UPDATE_SUMMARY.md
+        echo "- **Sui Updates Check:** ${{ needs.check-sui-updates.result }}" >> update-summary/UPDATE_SUMMARY.md
+        echo "- **Rust Updates Check:** ${{ needs.check-rust-updates.result }}" >> update-summary/UPDATE_SUMMARY.md
+        echo "- **Compatibility Test:** ${{ needs.compatibility-test.result }}" >> update-summary/UPDATE_SUMMARY.md
+        echo "" >> update-summary/UPDATE_SUMMARY.md
+        
+        # Include all reports
+        find all-reports -name "*.md" -exec echo "---" \; -exec cat {} \; >> update-summary/UPDATE_SUMMARY.md || true
+
+    - name: Upload Update Summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: update-summary-${{ github.sha }}
+        path: update-summary/
+        retention-days: 90

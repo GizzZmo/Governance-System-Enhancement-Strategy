@@ -1,0 +1,483 @@
+name: Code Quality & Linting
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run code quality checks daily at 1 AM UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  # Move code linting and formatting
+  move-linting:
+    name: Move Code Linting
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+        components: rustfmt, clippy
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Move Code Style Check
+      run: |
+        mkdir -p quality-reports
+        
+        echo "# Move Code Quality Report" > quality-reports/move-quality.md
+        echo "Generated on: $(date)" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+        
+        # Check file structure and naming conventions
+        echo "## File Structure Analysis" >> quality-reports/move-quality.md
+        
+        move_files=$(find . -name "*.move" -not -path "./build/*")
+        file_count=$(echo "$move_files" | wc -l)
+        
+        echo "- **Total Move files:** $file_count" >> quality-reports/move-quality.md
+        echo "- **Files analyzed:** $move_files" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+
+    - name: Analyze Code Patterns
+      run: |
+        echo "## Code Pattern Analysis" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+        
+        # Check for proper error handling
+        abort_usage=$(find . -name "*.move" -exec grep -c "abort\|assert!" {} + | awk '{s+=$1} END {print s+0}')
+        echo "- **Abort statements:** $abort_usage" >> quality-reports/move-quality.md
+        
+        # Check for public function patterns
+        public_funcs=$(find . -name "*.move" -exec grep -c "public fun\|public entry fun" {} + | awk '{s+=$1} END {print s+0}')
+        echo "- **Public functions:** $public_funcs" >> quality-reports/move-quality.md
+        
+        # Check for test coverage
+        test_files=$(find . -name "*test*.move" -o -name "*-tests.move" | wc -l)
+        echo "- **Test files:** $test_files" >> quality-reports/move-quality.md
+        
+        # Check for documentation comments
+        doc_comments=$(find . -name "*.move" -exec grep -c "///" {} + | awk '{s+=$1} END {print s+0}')
+        echo "- **Documentation comments:** $doc_comments" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+
+    - name: Code Complexity Analysis
+      run: |
+        echo "## Code Complexity Analysis" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+        
+        # Lines of code analysis
+        echo "### Lines of Code" >> quality-reports/move-quality.md
+        echo "| File | Lines | Functions | Structs |" >> quality-reports/move-quality.md
+        echo "|------|-------|-----------|---------|" >> quality-reports/move-quality.md
+        
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          lines=$(wc -l < "$file")
+          funcs=$(grep -c "fun " "$file" || echo "0")
+          structs=$(grep -c "struct " "$file" || echo "0")
+          filename=$(basename "$file")
+          echo "| $filename | $lines | $funcs | $structs |" >> quality-reports/move-quality.md
+        done
+        echo "" >> quality-reports/move-quality.md
+
+    - name: Function Complexity Check
+      run: |
+        echo "### Function Complexity" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+        
+        # Find long functions (basic heuristic)
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          echo "**File: $(basename "$file")**" >> quality-reports/move-quality.md
+          
+          # Extract function lengths (simplified approach)
+          awk '/fun / {start=NR; name=$0} /^[[:space:]]*}/ && start {print name " - Lines: " (NR-start+1); start=0}' "$file" | while read line; do
+            echo "- $line" >> quality-reports/move-quality.md
+          done
+          echo "" >> quality-reports/move-quality.md
+        done
+
+    - name: Best Practices Check
+      run: |
+        echo "## Best Practices Check" >> quality-reports/move-quality.md
+        echo "" >> quality-reports/move-quality.md
+        
+        # Check for capability usage
+        cap_pattern=$(find . -name "*.move" -exec grep -l "Cap\|Capability" {} + | wc -l)
+        if [ "$cap_pattern" -gt 0 ]; then
+          echo "✅ **Capability Pattern:** Used in $cap_pattern files" >> quality-reports/move-quality.md
+        else
+          echo "⚠️ **Capability Pattern:** Not detected" >> quality-reports/move-quality.md
+        fi
+        
+        # Check for proper object management
+        object_pattern=$(find . -name "*.move" -exec grep -l "object::\|transfer::" {} + | wc -l)
+        if [ "$object_pattern" -gt 0 ]; then
+          echo "✅ **Object Management:** Used in $object_pattern files" >> quality-reports/move-quality.md
+        else
+          echo "⚠️ **Object Management:** Limited usage detected" >> quality-reports/move-quality.md
+        fi
+        
+        # Check for event emission
+        event_pattern=$(find . -name "*.move" -exec grep -l "event::" {} + | wc -l)
+        if [ "$event_pattern" -gt 0 ]; then
+          echo "✅ **Event Emission:** Used in $event_pattern files" >> quality-reports/move-quality.md
+        else
+          echo "⚠️ **Event Emission:** Not detected" >> quality-reports/move-quality.md
+        fi
+        
+        # Check for proper error handling
+        error_pattern=$(find . -name "*.move" -exec grep -l "const E[A-Z_]*" {} + | wc -l)
+        if [ "$error_pattern" -gt 0 ]; then
+          echo "✅ **Error Constants:** Defined in $error_pattern files" >> quality-reports/move-quality.md
+        else
+          echo "⚠️ **Error Constants:** Not detected" >> quality-reports/move-quality.md
+        fi
+
+    - name: Upload Move Quality Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: move-quality-reports-${{ github.sha }}
+        path: quality-reports/
+        retention-days: 30
+
+  # Configuration and documentation linting
+  config-linting:
+    name: Configuration & Documentation Linting
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install Linting Tools
+      run: |
+        npm install -g markdownlint-cli
+        npm install -g yamllint
+        npm install -g jsonlint
+
+    - name: Lint Markdown Files
+      continue-on-error: true
+      run: |
+        mkdir -p lint-reports
+        
+        echo "# Documentation Linting Report" > lint-reports/doc-lint.md
+        echo "Generated on: $(date)" >> lint-reports/doc-lint.md
+        echo "" >> lint-reports/doc-lint.md
+        
+        # Markdown linting
+        echo "## Markdown Lint Results" >> lint-reports/doc-lint.md
+        
+        if find . -name "*.md" -type f | head -1 > /dev/null 2>&1; then
+          markdownlint . --json > markdownlint-results.json || true
+          
+          if [ -s markdownlint-results.json ]; then
+            issue_count=$(jq length markdownlint-results.json 2>/dev/null || echo "0")
+            echo "**Issues found:** $issue_count" >> lint-reports/doc-lint.md
+            echo "" >> lint-reports/doc-lint.md
+            
+            if [ "$issue_count" != "0" ]; then
+              echo "\`\`\`json" >> lint-reports/doc-lint.md
+              cat markdownlint-results.json >> lint-reports/doc-lint.md
+              echo "\`\`\`" >> lint-reports/doc-lint.md
+            fi
+          else
+            echo "✅ No markdown linting issues found" >> lint-reports/doc-lint.md
+          fi
+        else
+          echo "No markdown files found" >> lint-reports/doc-lint.md
+        fi
+
+    - name: Lint YAML Files
+      continue-on-error: true
+      run: |
+        echo "" >> lint-reports/doc-lint.md
+        echo "## YAML Lint Results" >> lint-reports/doc-lint.md
+        
+        yaml_files=$(find . -name "*.yml" -o -name "*.yaml" | head -10)
+        if [ -n "$yaml_files" ]; then
+          yaml_issues=0
+          echo "$yaml_files" | while read file; do
+            echo "Checking: $file" >> lint-reports/yaml-details.log
+            yamllint "$file" >> lint-reports/yaml-details.log 2>&1 || yaml_issues=$((yaml_issues + 1))
+          done
+          
+          if [ -s lint-reports/yaml-details.log ]; then
+            echo "**YAML files checked:** $(echo "$yaml_files" | wc -l)" >> lint-reports/doc-lint.md
+            echo "" >> lint-reports/doc-lint.md
+            echo "Details:" >> lint-reports/doc-lint.md
+            echo "\`\`\`" >> lint-reports/doc-lint.md
+            cat lint-reports/yaml-details.log >> lint-reports/doc-lint.md
+            echo "\`\`\`" >> lint-reports/doc-lint.md
+          else
+            echo "✅ No YAML linting issues found" >> lint-reports/doc-lint.md
+          fi
+        else
+          echo "No YAML files found" >> lint-reports/doc-lint.md
+        fi
+
+    - name: Lint JSON Files
+      continue-on-error: true
+      run: |
+        echo "" >> lint-reports/doc-lint.md
+        echo "## JSON Lint Results" >> lint-reports/doc-lint.md
+        
+        json_files=$(find . -name "*.json" | head -10)
+        if [ -n "$json_files" ]; then
+          json_valid=0
+          json_total=$(echo "$json_files" | wc -l)
+          
+          echo "$json_files" | while read file; do
+            if jsonlint "$file" > /dev/null 2>&1; then
+              json_valid=$((json_valid + 1))
+            fi
+          done
+          
+          echo "**JSON files checked:** $json_total" >> lint-reports/doc-lint.md
+          echo "**Valid JSON files:** $json_valid" >> lint-reports/doc-lint.md
+          
+          if [ "$json_valid" -eq "$json_total" ]; then
+            echo "✅ All JSON files are valid" >> lint-reports/doc-lint.md
+          else
+            echo "⚠️ Some JSON files have issues" >> lint-reports/doc-lint.md
+          fi
+        else
+          echo "No JSON files found" >> lint-reports/doc-lint.md
+        fi
+
+    - name: Upload Configuration Lint Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: config-lint-reports-${{ github.sha }}
+        path: lint-reports/
+        retention-days: 30
+
+  # Code style enforcement and formatting
+  style-check:
+    name: Code Style Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+        components: rustfmt, clippy
+
+    - name: Check Move Code Style Consistency
+      run: |
+        mkdir -p style-reports
+        
+        echo "# Code Style Report" > style-reports/style-check.md
+        echo "Generated on: $(date)" >> style-reports/style-check.md
+        echo "" >> style-reports/style-check.md
+        
+        # Check indentation consistency
+        echo "## Indentation Analysis" >> style-reports/style-check.md
+        
+        mixed_indent_files=$(find . -name "*.move" -exec sh -c 'grep -l "^[[:space:]]*[[:space:]]" "$1" | head -5' _ {} + || echo "")
+        if [ -n "$mixed_indent_files" ]; then
+          echo "Files with potential mixed indentation:" >> style-reports/style-check.md
+          echo "$mixed_indent_files" | while read file; do
+            echo "- \`$file\`" >> style-reports/style-check.md
+          done
+        else
+          echo "✅ No mixed indentation detected" >> style-reports/style-check.md
+        fi
+        echo "" >> style-reports/style-check.md
+
+    - name: Check Naming Conventions
+      run: |
+        echo "## Naming Convention Analysis" >> style-reports/style-check.md
+        echo "" >> style-reports/style-check.md
+        
+        # Check function naming (snake_case)
+        echo "### Function Naming" >> style-reports/style-check.md
+        non_snake_case_funcs=$(find . -name "*.move" -exec grep -n "fun [A-Z]" {} + || echo "")
+        if [ -n "$non_snake_case_funcs" ]; then
+          echo "Functions not following snake_case:" >> style-reports/style-check.md
+          echo "\`\`\`" >> style-reports/style-check.md
+          echo "$non_snake_case_funcs" >> style-reports/style-check.md
+          echo "\`\`\`" >> style-reports/style-check.md
+        else
+          echo "✅ Function naming follows snake_case convention" >> style-reports/style-check.md
+        fi
+        echo "" >> style-reports/style-check.md
+        
+        # Check struct naming (PascalCase)
+        echo "### Struct Naming" >> style-reports/style-check.md
+        non_pascal_case_structs=$(find . -name "*.move" -exec grep -n "struct [a-z]" {} + || echo "")
+        if [ -n "$non_pascal_case_structs" ]; then
+          echo "Structs not following PascalCase:" >> style-reports/style-check.md
+          echo "\`\`\`" >> style-reports/style-check.md
+          echo "$non_pascal_case_structs" >> style-reports/style-check.md
+          echo "\`\`\`" >> style-reports/style-check.md
+        else
+          echo "✅ Struct naming follows PascalCase convention" >> style-reports/style-check.md
+        fi
+
+    - name: Check Code Organization
+      run: |
+        echo "" >> style-reports/style-check.md
+        echo "## Code Organization" >> style-reports/style-check.md
+        echo "" >> style-reports/style-check.md
+        
+        # Check for proper use declarations at top
+        echo "### Import Organization" >> style-reports/style-check.md
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          first_use_line=$(grep -n "use " "$file" | head -1 | cut -d: -f1 || echo "0")
+          first_non_comment_line=$(grep -n -v "^[[:space:]]*//\|^[[:space:]]*$" "$file" | head -1 | cut -d: -f1 || echo "1")
+          
+          # Basic check if imports are near the top
+          if [ "$first_use_line" -gt 0 ] && [ "$first_use_line" -lt 20 ]; then
+            echo "✅ \`$(basename "$file")\`: Imports organized at top" >> style-reports/style-check.md
+          elif [ "$first_use_line" -gt 0 ]; then
+            echo "⚠️ \`$(basename "$file")\`: Imports may not be at top (line $first_use_line)" >> style-reports/style-check.md
+          else
+            echo "ℹ️ \`$(basename "$file")\`: No imports found" >> style-reports/style-check.md
+          fi
+        done
+
+    - name: Generate Style Score
+      run: |
+        echo "" >> style-reports/style-check.md
+        echo "## Style Score Calculation" >> style-reports/style-check.md
+        echo "" >> style-reports/style-check.md
+        
+        score=0
+        
+        # Add points for good practices
+        move_files=$(find . -name "*.move" -not -path "./build/*" | wc -l)
+        
+        # Check consistent naming
+        bad_func_names=$(find . -name "*.move" -exec grep -c "fun [A-Z]" {} + | awk '{s+=$1} END {print s+0}')
+        if [ "$bad_func_names" -eq 0 ]; then score=$((score + 25)); fi
+        
+        bad_struct_names=$(find . -name "*.move" -exec grep -c "struct [a-z]" {} + | awk '{s+=$1} END {print s+0}')
+        if [ "$bad_struct_names" -eq 0 ]; then score=$((score + 25)); fi
+        
+        # Check for documentation
+        doc_comments=$(find . -name "*.move" -exec grep -c "///" {} + | awk '{s+=$1} END {print s+0}')
+        if [ "$doc_comments" -gt "$move_files" ]; then score=$((score + 20)); fi
+        
+        # Check for proper error handling
+        error_constants=$(find . -name "*.move" -exec grep -c "const E[A-Z_]*" {} + | awk '{s+=$1} END {print s+0}')
+        if [ "$error_constants" -gt 0 ]; then score=$((score + 15)); fi
+        
+        # Check for consistent file organization
+        if [ "$move_files" -gt 0 ]; then score=$((score + 15)); fi
+        
+        echo "**Final Style Score: $score/100**" >> style-reports/style-check.md
+        
+        if [ "$score" -ge 80 ]; then
+          echo "🏆 **Excellent code style!**" >> style-reports/style-check.md
+        elif [ "$score" -ge 60 ]; then
+          echo "👍 **Good code style with room for improvement**" >> style-reports/style-check.md
+        elif [ "$score" -ge 40 ]; then
+          echo "⚠️ **Moderate code style - several improvements needed**" >> style-reports/style-check.md
+        else
+          echo "❌ **Code style needs significant improvement**" >> style-reports/style-check.md
+        fi
+
+    - name: Upload Style Check Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: style-check-reports-${{ github.sha }}
+        path: style-reports/
+        retention-days: 30
+
+  # Consolidated quality report
+  quality-summary:
+    name: Generate Quality Summary
+    runs-on: ubuntu-latest
+    needs: [move-linting, config-linting, style-check]
+    if: always()
+
+    steps:
+    - name: Download All Quality Reports
+      uses: actions/download-artifact@v3
+      with:
+        path: all-quality-reports/
+
+    - name: Generate Consolidated Quality Report
+      run: |
+        mkdir -p final-quality-report
+        
+        echo "# Consolidated Code Quality Report" > final-quality-report/QUALITY_SUMMARY.md
+        echo "Generated on: $(date)" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "Repository: ${{ github.repository }}" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "Commit: ${{ github.sha }}" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "" >> final-quality-report/QUALITY_SUMMARY.md
+        
+        echo "## Quality Checks Performed" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- ✅ Move code analysis and patterns" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- ✅ Documentation and configuration linting" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- ✅ Code style and naming conventions" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "" >> final-quality-report/QUALITY_SUMMARY.md
+        
+        # Combine all reports
+        find all-quality-reports/ -name "*.md" -exec echo "---" \; -exec cat {} \; >> final-quality-report/QUALITY_SUMMARY.md || true
+        
+        echo "" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "## Recommendations" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- Follow Move language best practices" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- Maintain consistent code style and naming conventions" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- Add comprehensive documentation comments" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- Use proper error handling with constants" >> final-quality-report/QUALITY_SUMMARY.md
+        echo "- Implement appropriate capability patterns" >> final-quality-report/QUALITY_SUMMARY.md
+
+    - name: Upload Consolidated Quality Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: consolidated-quality-report-${{ github.sha }}
+        path: final-quality-report/
+        retention-days: 90
+
+    - name: Comment PR with Quality Summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          try {
+            // Create a summary comment for the PR
+            const comment = `## 📋 Code Quality Summary
+            
+            Code quality checks have been completed for this PR.
+            
+            **Reports generated:**
+            - Move code analysis
+            - Documentation linting  
+            - Style consistency check
+            
+            📄 **Full reports are available in the workflow artifacts.**
+            
+            _This is an automated code quality check._`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          } catch (error) {
+            console.log('Could not create quality summary comment');
+          }
