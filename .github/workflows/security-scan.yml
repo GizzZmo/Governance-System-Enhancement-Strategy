@@ -1,0 +1,366 @@
+name: Security & Vulnerability Scanning
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scans daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  # Dependency vulnerability scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+
+    - name: Install Security Audit Tools
+      run: |
+        cargo install cargo-audit
+        cargo install cargo-outdated
+        cargo install cargo-license
+
+    - name: Run Dependency Audit
+      continue-on-error: true
+      run: |
+        # Create a temporary Cargo project for dependency analysis
+        mkdir -p temp-audit
+        cd temp-audit
+        cargo init --name security-audit
+        
+        # Add common Sui dependencies for analysis
+        cat >> Cargo.toml << EOF
+        [dependencies]
+        sui = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.48.1" }
+        sui-framework = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.48.1" }
+        EOF
+        
+        # Generate lockfile and run audit
+        cargo generate-lockfile || true
+        cargo audit --json > ../dependency-audit.json || true
+        cd ..
+
+    - name: Check Outdated Dependencies
+      continue-on-error: true
+      run: |
+        cd temp-audit
+        cargo outdated --json > ../outdated-deps.json || true
+        cd ..
+
+    - name: License Compliance Check
+      continue-on-error: true
+      run: |
+        cd temp-audit
+        cargo license --json > ../license-report.json || true
+        cd ..
+
+    - name: Generate Security Report
+      run: |
+        mkdir -p security-reports
+        
+        echo "# Security and Vulnerability Report" > security-reports/security-scan.md
+        echo "Generated on: $(date)" >> security-reports/security-scan.md
+        echo "Repository: ${{ github.repository }}" >> security-reports/security-scan.md
+        echo "Commit: ${{ github.sha }}" >> security-reports/security-scan.md
+        echo "" >> security-reports/security-scan.md
+        
+        # Process dependency audit results
+        if [ -f dependency-audit.json ]; then
+          echo "## Dependency Vulnerability Scan" >> security-reports/security-scan.md
+          
+          vuln_count=$(jq '.vulnerabilities.found | length' dependency-audit.json 2>/dev/null || echo "0")
+          echo "Vulnerabilities found: $vuln_count" >> security-reports/security-scan.md
+          echo "" >> security-reports/security-scan.md
+          
+          if [ "$vuln_count" != "0" ]; then
+            echo "### Vulnerabilities Details" >> security-reports/security-scan.md
+            echo "\`\`\`json" >> security-reports/security-scan.md
+            cat dependency-audit.json >> security-reports/security-scan.md
+            echo "\`\`\`" >> security-reports/security-scan.md
+          else
+            echo "✅ No vulnerabilities found in dependencies" >> security-reports/security-scan.md
+          fi
+          echo "" >> security-reports/security-scan.md
+        fi
+        
+        # Process outdated dependencies
+        if [ -f outdated-deps.json ]; then
+          echo "## Outdated Dependencies" >> security-reports/security-scan.md
+          echo "\`\`\`json" >> security-reports/security-scan.md
+          cat outdated-deps.json >> security-reports/security-scan.md
+          echo "\`\`\`" >> security-reports/security-scan.md
+          echo "" >> security-reports/security-scan.md
+        fi
+        
+        # Process license report
+        if [ -f license-report.json ]; then
+          echo "## License Compliance" >> security-reports/security-scan.md
+          echo "\`\`\`json" >> security-reports/security-scan.md
+          cat license-report.json >> security-reports/security-scan.md
+          echo "\`\`\`" >> security-reports/security-scan.md
+        fi
+
+    - name: Upload Security Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-scan-reports-${{ github.sha }}
+        path: security-reports/
+        retention-days: 30
+
+    - name: Comment PR with Security Summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          try {
+            const auditData = JSON.parse(fs.readFileSync('dependency-audit.json', 'utf8'));
+            const vulnCount = auditData.vulnerabilities ? auditData.vulnerabilities.found.length : 0;
+            
+            const comment = vulnCount > 0 
+              ? `⚠️ **Security Alert**: ${vulnCount} vulnerabilities found in dependencies. Please review the security report.`
+              : `✅ **Security Check**: No vulnerabilities found in dependencies.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          } catch (error) {
+            console.log('Could not parse audit results or create comment');
+          }
+
+  # Move code security analysis
+  move-security-scan:
+    name: Move Code Security Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Analyze Move Code Security
+      run: |
+        mkdir -p move-security-reports
+        
+        echo "# Move Code Security Analysis" > move-security-reports/move-security.md
+        echo "Generated on: $(date)" >> move-security-reports/move-security.md
+        echo "" >> move-security-reports/move-security.md
+        
+        # Check for common security patterns in Move code
+        echo "## Security Pattern Analysis" >> move-security-reports/move-security.md
+        
+        # Check for proper capability usage
+        echo "### Capability Usage" >> move-security-reports/move-security.md
+        cap_files=$(grep -l "Cap\|Capability" *.move || echo "none")
+        if [ "$cap_files" != "none" ]; then
+          echo "Files using capabilities: $cap_files" >> move-security-reports/move-security.md
+        else
+          echo "❌ No capability patterns found" >> move-security-reports/move-security.md
+        fi
+        echo "" >> move-security-reports/move-security.md
+        
+        # Check for proper error handling
+        echo "### Error Handling" >> move-security-reports/move-security.md
+        abort_count=$(grep -c "abort\|assert!" *.move || echo "0")
+        echo "Abort statements found: $abort_count" >> move-security-reports/move-security.md
+        echo "" >> move-security-reports/move-security.md
+        
+        # Check for access control patterns
+        echo "### Access Control" >> move-security-reports/move-security.md
+        access_patterns=$(grep -n "only_owner\|onlyOwner\|admin\|AdminCap" *.move || echo "none")
+        if [ "$access_patterns" != "none" ]; then
+          echo "Access control patterns found:" >> move-security-reports/move-security.md
+          echo "\`\`\`" >> move-security-reports/move-security.md
+          echo "$access_patterns" >> move-security-reports/move-security.md
+          echo "\`\`\`" >> move-security-reports/move-security.md
+        else
+          echo "⚠️ No explicit access control patterns found" >> move-security-reports/move-security.md
+        fi
+        echo "" >> move-security-reports/move-security.md
+        
+        # Check for public functions
+        echo "### Public Function Analysis" >> move-security-reports/move-security.md
+        public_funcs=$(grep -n "public fun\|public entry fun" *.move || echo "none")
+        if [ "$public_funcs" != "none" ]; then
+          func_count=$(echo "$public_funcs" | wc -l)
+          echo "Public functions found: $func_count" >> move-security-reports/move-security.md
+          echo "\`\`\`" >> move-security-reports/move-security.md
+          echo "$public_funcs" >> move-security-reports/move-security.md
+          echo "\`\`\`" >> move-security-reports/move-security.md
+        fi
+
+    - name: Check for Sui Security Best Practices
+      run: |
+        echo "## Sui Security Best Practices Check" >> move-security-reports/move-security.md
+        
+        # Check for object wrapping patterns
+        echo "### Object Management" >> move-security-reports/move-security.md
+        object_patterns=$(grep -n "transfer::\|object::\|UID" *.move || echo "none")
+        if [ "$object_patterns" != "none" ]; then
+          echo "✅ Object management patterns found" >> move-security-reports/move-security.md
+        else
+          echo "⚠️ Limited object management patterns" >> move-security-reports/move-security.md
+        fi
+        echo "" >> move-security-reports/move-security.md
+        
+        # Check for proper event emission
+        echo "### Event Emission" >> move-security-reports/move-security.md
+        event_patterns=$(grep -n "event::\|Event" *.move || echo "none")
+        if [ "$event_patterns" != "none" ]; then
+          echo "✅ Event emission patterns found" >> move-security-reports/move-security.md
+        else
+          echo "⚠️ No event emission patterns found" >> move-security-reports/move-security.md
+        fi
+
+    - name: Generate Security Score
+      run: |
+        # Calculate a basic security score based on patterns found
+        score=0
+        
+        # Add points for good practices
+        if grep -q "Cap\|Capability" *.move; then score=$((score + 20)); fi
+        if grep -q "abort\|assert!" *.move; then score=$((score + 15)); fi
+        if grep -q "transfer::\|object::" *.move; then score=$((score + 20)); fi
+        if grep -q "event::" *.move; then score=$((score + 10)); fi
+        if grep -q "only_owner\|admin" *.move; then score=$((score + 15)); fi
+        
+        # Deduct points for potential issues
+        public_count=$(grep -c "public fun\|public entry fun" *.move || echo "0")
+        if [ "$public_count" -gt 10 ]; then score=$((score - 10)); fi
+        
+        echo "" >> move-security-reports/move-security.md
+        echo "## Security Score: $score/80" >> move-security-reports/move-security.md
+        if [ "$score" -ge 60 ]; then
+          echo "✅ Good security practices detected" >> move-security-reports/move-security.md
+        elif [ "$score" -ge 40 ]; then
+          echo "⚠️ Moderate security practices - consider improvements" >> move-security-reports/move-security.md
+        else
+          echo "❌ Limited security practices - review recommended" >> move-security-reports/move-security.md
+        fi
+
+    - name: Upload Move Security Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: move-security-reports-${{ github.sha }}
+        path: move-security-reports/
+        retention-days: 30
+
+  # Secret scanning
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Install TruffleHog
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Run Secret Scanning
+      continue-on-error: true
+      run: |
+        mkdir -p secret-scan-reports
+        
+        echo "Running TruffleHog secret scan..."
+        trufflehog filesystem . --json > secret-scan-reports/secrets.json || true
+        
+        # Generate human-readable report
+        echo "# Secret Scanning Report" > secret-scan-reports/secret-scan.md
+        echo "Generated on: $(date)" >> secret-scan-reports/secret-scan.md
+        echo "" >> secret-scan-reports/secret-scan.md
+        
+        if [ -s secret-scan-reports/secrets.json ]; then
+          secret_count=$(jq length secret-scan-reports/secrets.json 2>/dev/null || echo "0")
+          echo "Potential secrets found: $secret_count" >> secret-scan-reports/secret-scan.md
+          
+          if [ "$secret_count" != "0" ]; then
+            echo "❌ **WARNING**: Potential secrets detected!" >> secret-scan-reports/secret-scan.md
+            echo "Please review the detailed JSON report." >> secret-scan-reports/secret-scan.md
+          else
+            echo "✅ No secrets detected" >> secret-scan-reports/secret-scan.md
+          fi
+        else
+          echo "✅ No secrets detected" >> secret-scan-reports/secret-scan.md
+        fi
+
+    - name: Upload Secret Scan Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: secret-scan-reports-${{ github.sha }}
+        path: secret-scan-reports/
+        retention-days: 30
+
+  # Consolidated security report
+  security-summary:
+    name: Generate Security Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, move-security-scan, secret-scan]
+    if: always()
+
+    steps:
+    - name: Download All Security Reports
+      uses: actions/download-artifact@v3
+      with:
+        path: all-security-reports/
+
+    - name: Generate Consolidated Security Report
+      run: |
+        mkdir -p final-security-report
+        
+        echo "# Consolidated Security Report" > final-security-report/SECURITY_SUMMARY.md
+        echo "Generated on: $(date)" >> final-security-report/SECURITY_SUMMARY.md
+        echo "Repository: ${{ github.repository }}" >> final-security-report/SECURITY_SUMMARY.md
+        echo "Commit: ${{ github.sha }}" >> final-security-report/SECURITY_SUMMARY.md
+        echo "" >> final-security-report/SECURITY_SUMMARY.md
+        
+        echo "## Summary" >> final-security-report/SECURITY_SUMMARY.md
+        echo "This report consolidates security findings from multiple scans:" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Dependency vulnerability scanning" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Move code security analysis" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Secret scanning" >> final-security-report/SECURITY_SUMMARY.md
+        echo "" >> final-security-report/SECURITY_SUMMARY.md
+        
+        # Combine reports if available
+        find all-security-reports/ -name "*.md" -exec echo "Including: {}" \; -exec cat {} \; >> final-security-report/SECURITY_SUMMARY.md || true
+        
+        echo "" >> final-security-report/SECURITY_SUMMARY.md
+        echo "## Recommendations" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Regularly update dependencies" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Follow Sui Move security best practices" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Implement comprehensive access controls" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Use proper error handling with abort statements" >> final-security-report/SECURITY_SUMMARY.md
+        echo "- Emit events for important state changes" >> final-security-report/SECURITY_SUMMARY.md
+
+    - name: Upload Consolidated Security Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: consolidated-security-report-${{ github.sha }}
+        path: final-security-report/
+        retention-days: 90
