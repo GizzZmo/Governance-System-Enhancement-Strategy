@@ -1,0 +1,515 @@
+name: Performance Testing & Benchmarking
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**.move'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**.move'
+  schedule:
+    # Run performance tests weekly on Saturdays at 4 AM UTC
+    - cron: '0 4 * * 6'
+  workflow_dispatch:
+    inputs:
+      benchmark_type:
+        description: 'Type of benchmark to run'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - build-only
+          - test-only
+          - gas-analysis
+
+jobs:
+  # Build performance benchmarking
+  build-performance:
+    name: Build Performance Benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Warm up Build Cache
+      run: |
+        # Initial build to warm up cache
+        sui move build --path . || true
+
+    - name: Clean Build Performance Test
+      run: |
+        mkdir -p performance-reports
+        
+        echo "# Build Performance Report" > performance-reports/build-performance.md
+        echo "Generated on: $(date)" >> performance-reports/build-performance.md
+        echo "Commit: ${{ github.sha }}" >> performance-reports/build-performance.md
+        echo "" >> performance-reports/build-performance.md
+        
+        # Clean build timing
+        echo "## Clean Build Performance" >> performance-reports/build-performance.md
+        
+        # Remove build artifacts
+        rm -rf build/ || true
+        
+        # Time the clean build
+        start_time=$(date +%s.%N)
+        sui move build --path .
+        end_time=$(date +%s.%N)
+        
+        build_duration=$(echo "$end_time - $start_time" | bc -l)
+        echo "**Clean build time:** ${build_duration} seconds" >> performance-reports/build-performance.md
+        echo "" >> performance-reports/build-performance.md
+
+    - name: Incremental Build Performance Test
+      run: |
+        echo "## Incremental Build Performance" >> performance-reports/build-performance.md
+        
+        # Touch a file to trigger incremental build
+        touch governance.move
+        
+        # Time the incremental build
+        start_time=$(date +%s.%N)
+        sui move build --path .
+        end_time=$(date +%s.%N)
+        
+        incremental_duration=$(echo "$end_time - $start_time" | bc -l)
+        echo "**Incremental build time:** ${incremental_duration} seconds" >> performance-reports/build-performance.md
+        echo "" >> performance-reports/build-performance.md
+
+    - name: Analyze Build Artifacts
+      run: |
+        echo "## Build Artifact Analysis" >> performance-reports/build-performance.md
+        
+        if [ -d build/ ]; then
+          # Get build directory size
+          build_size=$(du -sh build/ | cut -f1)
+          echo "**Build directory size:** $build_size" >> performance-reports/build-performance.md
+          
+          # Count compiled modules
+          module_count=$(find build/ -name "*.mv" | wc -l || echo "0")
+          echo "**Compiled modules:** $module_count" >> performance-reports/build-performance.md
+          
+          # List build artifacts
+          echo "" >> performance-reports/build-performance.md
+          echo "### Build Artifacts" >> performance-reports/build-performance.md
+          echo "\`\`\`" >> performance-reports/build-performance.md
+          find build/ -type f | head -20 >> performance-reports/build-performance.md
+          echo "\`\`\`" >> performance-reports/build-performance.md
+        fi
+
+    - name: Upload Build Performance Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-performance-${{ github.sha }}
+        path: performance-reports/
+        retention-days: 30
+
+  # Test execution performance
+  test-performance:
+    name: Test Execution Performance
+    runs-on: ubuntu-latest
+    needs: build-performance
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Test Execution Benchmark
+      run: |
+        mkdir -p test-performance-reports
+        
+        echo "# Test Execution Performance Report" > test-performance-reports/test-performance.md
+        echo "Generated on: $(date)" >> test-performance-reports/test-performance.md
+        echo "Commit: ${{ github.sha }}" >> test-performance-reports/test-performance.md
+        echo "" >> test-performance-reports/test-performance.md
+        
+        # Build first
+        sui move build --path .
+        
+        echo "## Test Execution Timing" >> test-performance-reports/test-performance.md
+        
+        # Run tests with timing
+        start_time=$(date +%s.%N)
+        sui move test --path . --gas-limit 100000000 > test-output.log 2>&1
+        test_exit_code=$?
+        end_time=$(date +%s.%N)
+        
+        test_duration=$(echo "$end_time - $start_time" | bc -l)
+        echo "**Total test execution time:** ${test_duration} seconds" >> test-performance-reports/test-performance.md
+        echo "**Test exit code:** $test_exit_code" >> test-performance-reports/test-performance.md
+        echo "" >> test-performance-reports/test-performance.md
+
+    - name: Analyze Individual Test Performance
+      run: |
+        echo "## Individual Test Analysis" >> test-performance-reports/test-performance.md
+        
+        if [ -f test-output.log ]; then
+          # Extract test results
+          echo "### Test Results Summary" >> test-performance-reports/test-performance.md
+          echo "\`\`\`" >> test-performance-reports/test-performance.md
+          grep -E "test result:|PASS|FAIL" test-output.log | head -20 >> test-performance-reports/test-performance.md
+          echo "\`\`\`" >> test-performance-reports/test-performance.md
+          echo "" >> test-performance-reports/test-performance.md
+          
+          # Count tests
+          passed_tests=$(grep -c "PASS" test-output.log || echo "0")
+          failed_tests=$(grep -c "FAIL" test-output.log || echo "0")
+          
+          echo "- **Passed tests:** $passed_tests" >> test-performance-reports/test-performance.md
+          echo "- **Failed tests:** $failed_tests" >> test-performance-reports/test-performance.md
+          echo "" >> test-performance-reports/test-performance.md
+        fi
+
+    - name: Memory Usage Analysis
+      run: |
+        echo "## Memory Usage Analysis" >> test-performance-reports/test-performance.md
+        
+        # Run tests with memory monitoring
+        echo "Running memory usage analysis..." >> test-performance-reports/test-performance.md
+        
+        # Basic memory info
+        echo "### System Memory Info" >> test-performance-reports/test-performance.md
+        echo "\`\`\`" >> test-performance-reports/test-performance.md
+        free -h >> test-performance-reports/test-performance.md
+        echo "\`\`\`" >> test-performance-reports/test-performance.md
+
+    - name: Upload Test Performance Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-performance-${{ github.sha }}
+        path: test-performance-reports/
+        retention-days: 30
+
+  # Gas usage analysis
+  gas-analysis:
+    name: Gas Usage Analysis
+    runs-on: ubuntu-latest
+    if: github.event.inputs.benchmark_type == 'gas-analysis' || github.event.inputs.benchmark_type == 'full' || github.event_name != 'workflow_dispatch'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Analyze Gas Usage Patterns
+      run: |
+        mkdir -p gas-analysis-reports
+        
+        echo "# Gas Usage Analysis Report" > gas-analysis-reports/gas-analysis.md
+        echo "Generated on: $(date)" >> gas-analysis-reports/gas-analysis.md
+        echo "Commit: ${{ github.sha }}" >> gas-analysis-reports/gas-analysis.md
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        
+        # Build the project
+        sui move build --path .
+        
+        echo "## Gas Usage Patterns" >> gas-analysis-reports/gas-analysis.md
+        echo "" >> gas-analysis-reports/gas-analysis.md
+
+    - name: Extract Function Complexity
+      run: |
+        echo "## Function Complexity Analysis" >> gas-analysis-reports/gas-analysis.md
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        
+        # Analyze Move files for complexity indicators
+        echo "| File | Functions | Loops | Conditionals | Calls |" >> gas-analysis-reports/gas-analysis.md
+        echo "|------|-----------|-------|--------------|-------|" >> gas-analysis-reports/gas-analysis.md
+        
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          filename=$(basename "$file")
+          func_count=$(grep -c "fun " "$file" || echo "0")
+          loop_count=$(grep -c "while\|loop" "$file" || echo "0")
+          if_count=$(grep -c "if\|else" "$file" || echo "0")
+          call_count=$(grep -c "::" "$file" || echo "0")
+          
+          echo "| $filename | $func_count | $loop_count | $if_count | $call_count |" >> gas-analysis-reports/gas-analysis.md
+        done
+        echo "" >> gas-analysis-reports/gas-analysis.md
+
+    - name: Estimate Gas Complexity
+      run: |
+        echo "## Gas Complexity Estimation" >> gas-analysis-reports/gas-analysis.md
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        
+        # Simple heuristic for gas complexity
+        total_score=0
+        file_count=0
+        
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          file_count=$((file_count + 1))
+          
+          # Calculate complexity score
+          func_count=$(grep -c "fun " "$file" || echo "0")
+          loop_count=$(grep -c "while\|loop" "$file" || echo "0")
+          if_count=$(grep -c "if\|else" "$file" || echo "0")
+          call_count=$(grep -c "::" "$file" || echo "0")
+          
+          # Simple scoring: functions=1, loops=3, conditionals=1, calls=1
+          score=$((func_count * 1 + loop_count * 3 + if_count * 1 + call_count * 1))
+          total_score=$((total_score + score))
+          
+          filename=$(basename "$file")
+          echo "- **$filename**: Complexity score $score" >> gas-analysis-reports/gas-analysis.md
+        done
+        
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        echo "**Total complexity score:** $total_score" >> gas-analysis-reports/gas-analysis.md
+        
+        # Categorize complexity
+        if [ "$total_score" -gt 200 ]; then
+          echo "**Complexity level:** High - Consider gas optimization" >> gas-analysis-reports/gas-analysis.md
+        elif [ "$total_score" -gt 100 ]; then
+          echo "**Complexity level:** Medium - Monitor gas usage" >> gas-analysis-reports/gas-analysis.md
+        else
+          echo "**Complexity level:** Low - Efficient gas usage expected" >> gas-analysis-reports/gas-analysis.md
+        fi
+
+    - name: Gas Optimization Recommendations
+      run: |
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        echo "## Gas Optimization Recommendations" >> gas-analysis-reports/gas-analysis.md
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        
+        # Check for common gas optimization patterns
+        echo "### Optimization Opportunities" >> gas-analysis-reports/gas-analysis.md
+        
+        # Check for excessive loops
+        loop_files=$(find . -name "*.move" -exec grep -l "while\|loop" {} +)
+        if [ -n "$loop_files" ]; then
+          echo "- **Loop optimization**: Files with loops detected - consider batch operations" >> gas-analysis-reports/gas-analysis.md
+          echo "$loop_files" | while read file; do
+            echo "  - \`$(basename "$file")\`" >> gas-analysis-reports/gas-analysis.md
+          done
+        fi
+        
+        # Check for vector operations
+        vector_files=$(find . -name "*.move" -exec grep -l "vector::" {} +)
+        if [ -n "$vector_files" ]; then
+          echo "- **Vector operations**: Consider vector size limits and iteration costs" >> gas-analysis-reports/gas-analysis.md
+        fi
+        
+        # Check for excessive external calls
+        call_heavy_files=$(find . -name "*.move" -exec sh -c 'if [ $(grep -c "::" "$1") -gt 20 ]; then echo "$1"; fi' _ {} +)
+        if [ -n "$call_heavy_files" ]; then
+          echo "- **External calls**: Files with many external calls - consider consolidation" >> gas-analysis-reports/gas-analysis.md
+        fi
+        
+        echo "" >> gas-analysis-reports/gas-analysis.md
+        echo "### Best Practices" >> gas-analysis-reports/gas-analysis.md
+        echo "- Minimize external function calls within loops" >> gas-analysis-reports/gas-analysis.md
+        echo "- Use batch operations for multiple similar actions" >> gas-analysis-reports/gas-analysis.md
+        echo "- Consider early returns to avoid unnecessary computation" >> gas-analysis-reports/gas-analysis.md
+        echo "- Cache frequently accessed values" >> gas-analysis-reports/gas-analysis.md
+
+    - name: Upload Gas Analysis Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: gas-analysis-${{ github.sha }}
+        path: gas-analysis-reports/
+        retention-days: 30
+
+  # Benchmark comparison with baseline
+  benchmark-comparison:
+    name: Benchmark Comparison
+    runs-on: ubuntu-latest
+    needs: [build-performance, test-performance]
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Download Current Performance Reports
+      uses: actions/download-artifact@v3
+      with:
+        name: build-performance-${{ github.sha }}
+        path: current-reports/
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Benchmark Base Branch
+      run: |
+        mkdir -p baseline-reports
+        
+        # Checkout base branch
+        git checkout ${{ github.event.pull_request.base.sha }}
+        
+        echo "# Baseline Performance Report" > baseline-reports/baseline-performance.md
+        echo "Base commit: ${{ github.event.pull_request.base.sha }}" >> baseline-reports/baseline-performance.md
+        echo "Generated on: $(date)" >> baseline-reports/baseline-performance.md
+        echo "" >> baseline-reports/baseline-performance.md
+        
+        # Clean build timing for baseline
+        rm -rf build/ || true
+        start_time=$(date +%s.%N)
+        sui move build --path . || true
+        end_time=$(date +%s.%N)
+        
+        baseline_duration=$(echo "$end_time - $start_time" | bc -l)
+        echo "**Baseline clean build time:** ${baseline_duration} seconds" >> baseline-reports/baseline-performance.md
+
+    - name: Generate Performance Comparison
+      run: |
+        mkdir -p comparison-reports
+        
+        echo "# Performance Comparison Report" > comparison-reports/performance-comparison.md
+        echo "Comparing PR changes against base branch" >> comparison-reports/performance-comparison.md
+        echo "Generated on: $(date)" >> comparison-reports/performance-comparison.md
+        echo "" >> comparison-reports/performance-comparison.md
+        
+        # Extract performance metrics
+        current_build_time=$(grep "Clean build time:" current-reports/build-performance.md | grep -o "[0-9.]*" || echo "0")
+        baseline_build_time=$(grep "Baseline clean build time:" baseline-reports/baseline-performance.md | grep -o "[0-9.]*" || echo "0")
+        
+        echo "## Build Performance Comparison" >> comparison-reports/performance-comparison.md
+        echo "| Metric | Baseline | Current | Change |" >> comparison-reports/performance-comparison.md
+        echo "|--------|----------|---------|--------|" >> comparison-reports/performance-comparison.md
+        
+        if [ "$baseline_build_time" != "0" ] && [ "$current_build_time" != "0" ]; then
+          change=$(echo "scale=2; (($current_build_time - $baseline_build_time) / $baseline_build_time) * 100" | bc -l)
+          echo "| Clean Build Time | ${baseline_build_time}s | ${current_build_time}s | ${change}% |" >> comparison-reports/performance-comparison.md
+        else
+          echo "| Clean Build Time | ${baseline_build_time}s | ${current_build_time}s | N/A |" >> comparison-reports/performance-comparison.md
+        fi
+        
+        echo "" >> comparison-reports/performance-comparison.md
+        
+        # Performance impact assessment
+        if [ "$baseline_build_time" != "0" ] && [ "$current_build_time" != "0" ]; then
+          impact=$(echo "$current_build_time > $baseline_build_time * 1.1" | bc -l)
+          if [ "$impact" -eq 1 ]; then
+            echo "⚠️ **Performance Impact**: Build time increased by more than 10%" >> comparison-reports/performance-comparison.md
+            echo "PERFORMANCE_REGRESSION=true" >> $GITHUB_ENV
+          else
+            echo "✅ **Performance Impact**: No significant performance regression detected" >> comparison-reports/performance-comparison.md
+            echo "PERFORMANCE_REGRESSION=false" >> $GITHUB_ENV
+          fi
+        fi
+
+    - name: Upload Comparison Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-comparison-${{ github.sha }}
+        path: |
+          comparison-reports/
+          baseline-reports/
+        retention-days: 30
+
+    - name: Comment Performance Comparison on PR
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let comparisonContent = '';
+          try {
+            comparisonContent = fs.readFileSync('comparison-reports/performance-comparison.md', 'utf8');
+          } catch (error) {
+            comparisonContent = 'Performance comparison failed to generate';
+          }
+          
+          const performanceRegression = process.env.PERFORMANCE_REGRESSION === 'true';
+          const emoji = performanceRegression ? '⚠️' : '✅';
+          
+          const comment = `## ${emoji} Performance Benchmark Results
+
+${comparisonContent}
+
+---
+*This benchmark was generated automatically. Review the detailed reports in the workflow artifacts.*`;
+
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: comment
+          });
+
+  # Generate consolidated performance report
+  performance-summary:
+    name: Generate Performance Summary
+    runs-on: ubuntu-latest
+    needs: [build-performance, test-performance, gas-analysis]
+    if: always()
+
+    steps:
+    - name: Download All Performance Reports
+      uses: actions/download-artifact@v3
+      with:
+        path: all-performance-reports/
+
+    - name: Generate Consolidated Report
+      run: |
+        mkdir -p final-performance-report
+        
+        echo "# Consolidated Performance Report" > final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "Generated on: $(date)" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "Repository: ${{ github.repository }}" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "Commit: ${{ github.sha }}" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        
+        echo "## Performance Test Results" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- **Build Performance:** ${{ needs.build-performance.result }}" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- **Test Performance:** ${{ needs.test-performance.result }}" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- **Gas Analysis:** ${{ needs.gas-analysis.result }}" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        
+        # Combine all reports
+        find all-performance-reports/ -name "*.md" -exec echo "---" \; -exec cat {} \; >> final-performance-report/PERFORMANCE_SUMMARY.md || true
+        
+        echo "" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "## Performance Recommendations" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- Monitor build times to catch performance regressions early" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- Optimize high-complexity functions identified in gas analysis" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- Consider test parallelization for faster feedback cycles" >> final-performance-report/PERFORMANCE_SUMMARY.md
+        echo "- Regular performance benchmarking helps maintain code quality" >> final-performance-report/PERFORMANCE_SUMMARY.md
+
+    - name: Upload Consolidated Performance Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: consolidated-performance-report-${{ github.sha }}
+        path: final-performance-report/
+        retention-days: 90

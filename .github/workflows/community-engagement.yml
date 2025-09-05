@@ -1,0 +1,586 @@
+name: Community Engagement & PR Automation
+
+on:
+  issues:
+    types: [opened, labeled, assigned]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+  schedule:
+    # Weekly community report on Sundays at 6 PM UTC
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+jobs:
+  # Auto-label and triage new issues
+  issue-triage:
+    name: Automatic Issue Triage
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Auto-label Issues
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const issue = context.payload.issue;
+          const title = issue.title.toLowerCase();
+          const body = issue.body ? issue.body.toLowerCase() : '';
+          
+          const labels = [];
+          
+          // Categorize by type
+          if (title.includes('bug') || body.includes('error') || body.includes('fail')) {
+            labels.push('bug');
+          } else if (title.includes('feature') || title.includes('enhancement') || body.includes('feature request')) {
+            labels.push('enhancement');
+          } else if (title.includes('doc') || body.includes('documentation')) {
+            labels.push('documentation');
+          } else if (title.includes('question') || title.includes('help')) {
+            labels.push('question');
+          }
+          
+          // Categorize by component
+          if (body.includes('governance') || title.includes('governance')) {
+            labels.push('governance');
+          } else if (body.includes('treasury') || title.includes('treasury')) {
+            labels.push('treasury');
+          } else if (body.includes('staking') || title.includes('staking')) {
+            labels.push('staking');
+          } else if (body.includes('test') || title.includes('test')) {
+            labels.push('testing');
+          }
+          
+          // Priority labeling
+          if (title.includes('urgent') || title.includes('critical') || body.includes('urgent')) {
+            labels.push('priority:high');
+          } else if (title.includes('minor') || body.includes('nice to have')) {
+            labels.push('priority:low');
+          } else {
+            labels.push('priority:medium');
+          }
+          
+          // Difficulty estimation
+          if (body.includes('simple') || body.includes('easy')) {
+            labels.push('good first issue');
+          } else if (body.includes('complex') || body.includes('difficult')) {
+            labels.push('difficulty:hard');
+          }
+          
+          // Apply labels
+          if (labels.length > 0) {
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: labels
+            });
+          }
+
+    - name: Welcome New Contributors
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const issue = context.payload.issue;
+          
+          // Check if this is the user's first issue
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            creator: issue.user.login,
+            state: 'all'
+          });
+          
+          if (issues.length === 1) {
+            const welcomeMessage = `👋 Welcome to the Governance System Enhancement Strategy project, @${issue.user.login}!
+
+Thank you for opening your first issue. Here are some helpful resources:
+
+- 📖 [Contributing Guidelines](./CONTRIBUTING.md)
+- 🔧 [Development Setup Guide](./README.md#getting-started)
+- 💬 [Community Chat](https://discord.gg/Dy5Epsyc)
+- 🐦 [Follow us on X](https://x.com/Jon_Arve)
+
+A maintainer will review your issue soon. If you're interested in contributing code, please check out our [good first issue](https://github.com/${context.repo.owner}/${context.repo.repo}/labels/good%20first%20issue) label!`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: welcomeMessage
+            });
+          }
+
+  # Auto-review and analyze pull requests
+  pr-analysis:
+    name: PR Analysis & Auto-Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize')
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Analyze PR Changes
+      id: pr_analysis
+      run: |
+        mkdir -p pr-analysis
+        
+        echo "# PR Analysis Report" > pr-analysis/pr-analysis.md
+        echo "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" >> pr-analysis/pr-analysis.md
+        echo "Generated on: $(date)" >> pr-analysis/pr-analysis.md
+        echo "" >> pr-analysis/pr-analysis.md
+        
+        # Get changed files
+        echo "## Changed Files" >> pr-analysis/pr-analysis.md
+        git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > changed-files.txt
+        
+        if [ -s changed-files.txt ]; then
+          move_files=$(grep "\.move$" changed-files.txt || echo "")
+          workflow_files=$(grep "\.yml$\|\.yaml$" changed-files.txt || echo "")
+          doc_files=$(grep "\.md$" changed-files.txt || echo "")
+          
+          echo "- **Move files:** $(echo "$move_files" | wc -l)" >> pr-analysis/pr-analysis.md
+          echo "- **Workflow files:** $(echo "$workflow_files" | wc -l)" >> pr-analysis/pr-analysis.md
+          echo "- **Documentation files:** $(echo "$doc_files" | wc -l)" >> pr-analysis/pr-analysis.md
+          echo "" >> pr-analysis/pr-analysis.md
+          
+          # Set analysis flags
+          if [ -n "$move_files" ]; then echo "HAS_MOVE_CHANGES=true" >> $GITHUB_ENV; fi
+          if [ -n "$workflow_files" ]; then echo "HAS_WORKFLOW_CHANGES=true" >> $GITHUB_ENV; fi
+          if [ -n "$doc_files" ]; then echo "HAS_DOC_CHANGES=true" >> $GITHUB_ENV; fi
+        fi
+        
+        # Analyze code changes
+        echo "## Code Change Analysis" >> pr-analysis/pr-analysis.md
+        
+        lines_added=$(git diff --shortstat ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -o "[0-9]* insertion" | cut -d' ' -f1 || echo "0")
+        lines_deleted=$(git diff --shortstat ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -o "[0-9]* deletion" | cut -d' ' -f1 || echo "0")
+        
+        echo "- **Lines added:** $lines_added" >> pr-analysis/pr-analysis.md
+        echo "- **Lines deleted:** $lines_deleted" >> pr-analysis/pr-analysis.md
+        echo "" >> pr-analysis/pr-analysis.md
+        
+        # Calculate change impact
+        total_changes=$((lines_added + lines_deleted))
+        if [ "$total_changes" -gt 500 ]; then
+          echo "- **Impact:** Large PR (consider breaking into smaller PRs)" >> pr-analysis/pr-analysis.md
+          echo "PR_SIZE=large" >> $GITHUB_ENV
+        elif [ "$total_changes" -gt 100 ]; then
+          echo "- **Impact:** Medium PR" >> pr-analysis/pr-analysis.md
+          echo "PR_SIZE=medium" >> $GITHUB_ENV
+        else
+          echo "- **Impact:** Small PR" >> pr-analysis/pr-analysis.md
+          echo "PR_SIZE=small" >> $GITHUB_ENV
+        fi
+
+    - name: Check for Breaking Changes
+      if: env.HAS_MOVE_CHANGES == 'true'
+      run: |
+        echo "" >> pr-analysis/pr-analysis.md
+        echo "## Breaking Change Analysis" >> pr-analysis/pr-analysis.md
+        
+        # Check for potential breaking changes in Move code
+        breaking_patterns="public fun.*->.*|struct.*{.*}.*->|const.*:.*u.*->|module.*{.*->.*}"
+        
+        if git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- "*.move" | grep -E "\-.*$breaking_patterns" > /dev/null; then
+          echo "⚠️ **Potential breaking changes detected in Move code**" >> pr-analysis/pr-analysis.md
+          echo "POTENTIAL_BREAKING_CHANGES=true" >> $GITHUB_ENV
+        else
+          echo "✅ No obvious breaking changes detected" >> pr-analysis/pr-analysis.md
+          echo "POTENTIAL_BREAKING_CHANGES=false" >> $GITHUB_ENV
+        fi
+        
+        # Check for new public functions
+        new_public_funcs=$(git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- "*.move" | grep "^+.*public fun" | wc -l)
+        if [ "$new_public_funcs" -gt 0 ]; then
+          echo "- **New public functions added:** $new_public_funcs" >> pr-analysis/pr-analysis.md
+        fi
+
+    - name: Suggest Reviewers
+      run: |
+        echo "" >> pr-analysis/pr-analysis.md
+        echo "## Suggested Reviewers" >> pr-analysis/pr-analysis.md
+        
+        # Suggest reviewers based on file changes
+        if [ "$HAS_MOVE_CHANGES" = "true" ]; then
+          echo "- Move code changes detected - suggest blockchain/Move experts" >> pr-analysis/pr-analysis.md
+        fi
+        
+        if [ "$HAS_WORKFLOW_CHANGES" = "true" ]; then
+          echo "- Workflow changes detected - suggest DevOps/CI experts" >> pr-analysis/pr-analysis.md
+        fi
+        
+        if [ "$HAS_DOC_CHANGES" = "true" ]; then
+          echo "- Documentation changes detected - suggest technical writers" >> pr-analysis/pr-analysis.md
+        fi
+        
+        if [ "$POTENTIAL_BREAKING_CHANGES" = "true" ]; then
+          echo "- **Breaking changes detected - requires senior reviewer approval**" >> pr-analysis/pr-analysis.md
+        fi
+
+    - name: Upload PR Analysis
+      uses: actions/upload-artifact@v3
+      with:
+        name: pr-analysis-${{ github.event.pull_request.number }}
+        path: pr-analysis/
+        retention-days: 30
+
+    - name: Auto-label PR
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const labels = [];
+          
+          // Size labels
+          const prSize = process.env.PR_SIZE;
+          if (prSize) {
+            labels.push(`size:${prSize}`);
+          }
+          
+          // Component labels
+          if (process.env.HAS_MOVE_CHANGES === 'true') {
+            labels.push('move-code');
+          }
+          if (process.env.HAS_WORKFLOW_CHANGES === 'true') {
+            labels.push('ci/cd');
+          }
+          if (process.env.HAS_DOC_CHANGES === 'true') {
+            labels.push('documentation');
+          }
+          
+          // Breaking change label
+          if (process.env.POTENTIAL_BREAKING_CHANGES === 'true') {
+            labels.push('breaking-change');
+          }
+          
+          // Apply labels
+          if (labels.length > 0) {
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: labels
+            });
+          }
+
+    - name: Comment PR Analysis
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let analysisContent = '';
+          try {
+            analysisContent = fs.readFileSync('pr-analysis/pr-analysis.md', 'utf8');
+          } catch (error) {
+            analysisContent = 'PR analysis failed to generate';
+          }
+          
+          const comment = `## 🤖 Automated PR Analysis
+
+${analysisContent}
+
+---
+*This analysis was generated automatically. Please review and verify the suggestions.*`;
+
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: comment
+          });
+
+  # Thank contributors for their PR reviews
+  review-thanks:
+    name: Thank Contributors for Reviews
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_review' && github.event.action == 'submitted'
+
+    steps:
+    - name: Thank Reviewer
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const review = context.payload.review;
+          const reviewer = review.user.login;
+          
+          // Don't thank bots or the PR author
+          if (reviewer.includes('bot') || reviewer === context.payload.pull_request.user.login) {
+            return;
+          }
+          
+          let message = '';
+          
+          if (review.state === 'approved') {
+            message = `🎉 Thank you for approving this PR, @${reviewer}! Your review helps maintain code quality.`;
+          } else if (review.state === 'changes_requested') {
+            message = `🔍 Thank you for the detailed review, @${reviewer}! Your feedback will help improve this contribution.`;
+          } else if (review.state === 'commented') {
+            message = `💭 Thank you for taking the time to review and comment, @${reviewer}! Your insights are valuable.`;
+          }
+          
+          if (message) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: message
+            });
+          }
+
+  # Generate weekly community report
+  community-report:
+    name: Generate Community Report
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Generate Community Statistics
+      run: |
+        mkdir -p community-reports
+        
+        echo "# Weekly Community Report" > community-reports/community-report.md
+        echo "Generated on: $(date)" >> community-reports/community-report.md
+        echo "Period: $(date -d '7 days ago' +%Y-%m-%d) to $(date +%Y-%m-%d)" >> community-reports/community-report.md
+        echo "" >> community-reports/community-report.md
+
+    - name: Fetch GitHub Statistics
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+          
+          // Get recent issues
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            since: oneWeekAgo,
+            state: 'all'
+          });
+          
+          // Get recent PRs
+          const { data: prs } = await github.rest.pulls.list({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'all',
+            sort: 'created',
+            direction: 'desc'
+          });
+          
+          const recentPRs = prs.filter(pr => new Date(pr.created_at) > new Date(oneWeekAgo));
+          
+          // Get contributors
+          const { data: contributors } = await github.rest.repos.listContributors({
+            owner: context.repo.owner,
+            repo: context.repo.repo
+          });
+          
+          let report = `## GitHub Activity Summary
+
+- **New Issues:** ${issues.filter(i => !i.pull_request).length}
+- **New Pull Requests:** ${recentPRs.length}
+- **Total Contributors:** ${contributors.length}
+
+## Recent Issues
+`;
+
+          issues.filter(i => !i.pull_request).slice(0, 5).forEach(issue => {
+            report += `- [#${issue.number}](${issue.html_url}) ${issue.title} by @${issue.user.login}\n`;
+          });
+
+          report += `\n## Recent Pull Requests\n`;
+
+          recentPRs.slice(0, 5).forEach(pr => {
+            report += `- [#${pr.number}](${pr.html_url}) ${pr.title} by @${pr.user.login}\n`;
+          });
+
+          report += `\n## Top Contributors This Week\n`;
+
+          const weeklyContributors = new Set();
+          issues.forEach(issue => weeklyContributors.add(issue.user.login));
+          recentPRs.forEach(pr => weeklyContributors.add(pr.user.login));
+
+          Array.from(weeklyContributors).slice(0, 5).forEach(contributor => {
+            report += `- @${contributor}\n`;
+          });
+
+          fs.appendFileSync('community-reports/community-report.md', report);
+
+    - name: Generate Engagement Metrics
+      run: |
+        echo "" >> community-reports/community-report.md
+        echo "## Engagement Metrics" >> community-reports/community-report.md
+        echo "- Repository stars: Loading..." >> community-reports/community-report.md
+        echo "- Repository forks: Loading..." >> community-reports/community-report.md
+        echo "- Open issues: Loading..." >> community-reports/community-report.md
+        echo "- Open PRs: Loading..." >> community-reports/community-report.md
+        echo "" >> community-reports/community-report.md
+        echo "## Community Links" >> community-reports/community-report.md
+        echo "- [GitHub Discussions](https://github.com/${{ github.repository }}/discussions)" >> community-reports/community-report.md
+        echo "- [Discord Community](https://discord.gg/Dy5Epsyc)" >> community-reports/community-report.md
+        echo "- [Follow on X](https://x.com/Jon_Arve)" >> community-reports/community-report.md
+
+    - name: Upload Community Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: community-report-$(date +%Y%m%d)
+        path: community-reports/
+        retention-days: 90
+
+    - name: Create Weekly Discussion
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let reportContent = '';
+          try {
+            reportContent = fs.readFileSync('community-reports/community-report.md', 'utf8');
+          } catch (error) {
+            reportContent = 'Weekly community report generation failed';
+          }
+          
+          // Create a discussion post (if discussions are enabled)
+          try {
+            const discussionTitle = `Weekly Community Report - ${new Date().toLocaleDateString()}`;
+            
+            // Note: Creating discussions requires the GraphQL API and specific permissions
+            console.log('Would create discussion:', discussionTitle);
+            console.log('Content preview:', reportContent.slice(0, 200) + '...');
+          } catch (error) {
+            console.log('Could not create discussion:', error.message);
+          }
+
+  # Automated project maintenance
+  project-maintenance:
+    name: Project Maintenance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Close Stale Issues
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const staleLabel = 'stale';
+          const daysBeforeStale = 30;
+          const daysBeforeClose = 7;
+          
+          const staleDate = new Date(Date.now() - daysBeforeStale * 24 * 60 * 60 * 1000);
+          const closeDate = new Date(Date.now() - (daysBeforeStale + daysBeforeClose) * 24 * 60 * 60 * 1000);
+          
+          // Get all open issues
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open'
+          });
+          
+          for (const issue of issues) {
+            const lastUpdate = new Date(issue.updated_at);
+            const hasStaleLabel = issue.labels.some(label => label.name === staleLabel);
+            
+            if (lastUpdate < closeDate && hasStaleLabel) {
+              // Close stale issues
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: '🤖 This issue has been automatically closed due to inactivity. If you believe this was closed in error, please reopen it.'
+              });
+            } else if (lastUpdate < staleDate && !hasStaleLabel) {
+              // Mark as stale
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [staleLabel]
+              });
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: '⏰ This issue has been marked as stale due to inactivity. It will be closed in 7 days if no further activity occurs.'
+              });
+            }
+          }
+
+    - name: Update Community Health Files
+      run: |
+        # Check if community health files need updates
+        echo "Checking community health files..."
+        
+        # Update issue templates if they don't exist
+        mkdir -p .github/ISSUE_TEMPLATE
+        
+        if [ ! -f .github/ISSUE_TEMPLATE/bug_report.yml ]; then
+          cat > .github/ISSUE_TEMPLATE/bug_report.yml << 'EOF'
+        name: Bug Report
+        description: File a bug report to help us improve
+        title: "[Bug]: "
+        labels: ["bug"]
+        body:
+          - type: markdown
+            attributes:
+              value: |
+                Thanks for taking the time to fill out this bug report!
+          - type: textarea
+            id: what-happened
+            attributes:
+              label: What happened?
+              description: Also tell us, what did you expect to happen?
+              placeholder: Tell us what you see!
+            validations:
+              required: true
+          - type: textarea
+            id: reproduction
+            attributes:
+              label: Reproduction steps
+              description: How can we reproduce this bug?
+              placeholder: |
+                1. Run command...
+                2. See error...
+            validations:
+              required: true
+        EOF
+        fi
+
+    - name: Commit Maintenance Updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add -A
+        if git diff --staged --quiet; then
+          echo "No maintenance updates needed"
+        else
+          git commit -m "chore: automated project maintenance
+
+          - Update community health files
+          - Add issue templates if missing
+          
+          Auto-generated by community-engagement workflow"
+          git push
+        fi

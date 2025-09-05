@@ -1,0 +1,372 @@
+name: Release Automation & Changelog Generation
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  # Generate comprehensive release notes and changelog
+  generate-release-notes:
+    name: Generate Release Notes
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install Release Tools
+      run: |
+        npm install -g conventional-changelog-cli
+        npm install -g auto-changelog
+
+    - name: Get Version Information
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Get Previous Tag
+      id: prev_tag
+      run: |
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+        echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+        echo "Previous tag: $PREVIOUS_TAG"
+
+    - name: Generate Changelog
+      run: |
+        mkdir -p release-artifacts
+        
+        echo "# Changelog" > release-artifacts/CHANGELOG.md
+        echo "" >> release-artifacts/CHANGELOG.md
+        
+        if [ -n "${{ steps.prev_tag.outputs.previous_tag }}" ]; then
+          echo "## Changes since ${{ steps.prev_tag.outputs.previous_tag }}" >> release-artifacts/CHANGELOG.md
+          echo "" >> release-artifacts/CHANGELOG.md
+          
+          # Get commit messages since last tag
+          git log --pretty=format:"- %s (%h)" ${{ steps.prev_tag.outputs.previous_tag }}..HEAD >> release-artifacts/CHANGELOG.md
+        else
+          echo "## All Changes" >> release-artifacts/CHANGELOG.md
+          echo "" >> release-artifacts/CHANGELOG.md
+          git log --pretty=format:"- %s (%h)" >> release-artifacts/CHANGELOG.md
+        fi
+        
+        echo "" >> release-artifacts/CHANGELOG.md
+
+    - name: Generate Release Notes
+      run: |
+        echo "# Release Notes for ${{ steps.version.outputs.version }}" > release-artifacts/RELEASE_NOTES.md
+        echo "" >> release-artifacts/RELEASE_NOTES.md
+        echo "**Release Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> release-artifacts/RELEASE_NOTES.md
+        echo "" >> release-artifacts/RELEASE_NOTES.md
+        
+        # Add project statistics
+        echo "## Project Statistics" >> release-artifacts/RELEASE_NOTES.md
+        echo "- **Total Move Files:** $(find . -name "*.move" | wc -l)" >> release-artifacts/RELEASE_NOTES.md
+        echo "- **Lines of Move Code:** $(find . -name "*.move" -exec cat {} + | wc -l)" >> release-artifacts/RELEASE_NOTES.md
+        echo "- **Test Files:** $(find . -name "*test*.move" -o -name "*-tests.move" | wc -l)" >> release-artifacts/RELEASE_NOTES.md
+        echo "" >> release-artifacts/RELEASE_NOTES.md
+        
+        # Add component summary
+        echo "## Components Included" >> release-artifacts/RELEASE_NOTES.md
+        find . -name "*.move" -not -path "./sources/*" | while read file; do
+          echo "- **$(basename "$file" .move)**: $(head -5 "$file" | grep -E "^//|^///|^ *//|^ *///" | head -1 | sed 's/^[/ ]*//')" >> release-artifacts/RELEASE_NOTES.md
+        done
+        echo "" >> release-artifacts/RELEASE_NOTES.md
+        
+        # Include recent changes
+        echo "## Recent Changes" >> release-artifacts/RELEASE_NOTES.md
+        cat release-artifacts/CHANGELOG.md | tail -n +3 >> release-artifacts/RELEASE_NOTES.md
+
+    - name: Generate API Documentation for Release
+      run: |
+        echo "# API Reference - ${{ steps.version.outputs.version }}" > release-artifacts/API_REFERENCE.md
+        echo "" >> release-artifacts/API_REFERENCE.md
+        
+        # Extract public functions
+        echo "## Public Functions" >> release-artifacts/API_REFERENCE.md
+        find . -name "*.move" | while read file; do
+          module_name=$(grep -m1 "module " "$file" | cut -d' ' -f2 | cut -d'{' -f1 || echo "Unknown")
+          public_funcs=$(grep -n "public fun\|public entry fun" "$file" || true)
+          
+          if [ -n "$public_funcs" ]; then
+            echo "" >> release-artifacts/API_REFERENCE.md
+            echo "### Module: $module_name" >> release-artifacts/API_REFERENCE.md
+            echo "**File:** \`$(basename "$file")\`" >> release-artifacts/API_REFERENCE.md
+            echo "" >> release-artifacts/API_REFERENCE.md
+            echo "\`\`\`move" >> release-artifacts/API_REFERENCE.md
+            echo "$public_funcs" | sed 's/^[0-9]*://' >> release-artifacts/API_REFERENCE.md
+            echo "\`\`\`" >> release-artifacts/API_REFERENCE.md
+          fi
+        done
+
+    - name: Generate Migration Guide
+      run: |
+        echo "# Migration Guide to ${{ steps.version.outputs.version }}" > release-artifacts/MIGRATION_GUIDE.md
+        echo "" >> release-artifacts/MIGRATION_GUIDE.md
+        echo "This guide helps you migrate to version ${{ steps.version.outputs.version }}." >> release-artifacts/MIGRATION_GUIDE.md
+        echo "" >> release-artifacts/MIGRATION_GUIDE.md
+        
+        if [ -n "${{ steps.prev_tag.outputs.previous_tag }}" ]; then
+          echo "## Breaking Changes" >> release-artifacts/MIGRATION_GUIDE.md
+          echo "The following changes may require updates to your integration:" >> release-artifacts/MIGRATION_GUIDE.md
+          echo "" >> release-artifacts/MIGRATION_GUIDE.md
+          
+          # Look for function signature changes
+          echo "### Function Signature Changes" >> release-artifacts/MIGRATION_GUIDE.md
+          # This is a placeholder - in a real scenario, you'd compare with previous version
+          echo "- Review the API Reference for any function signature changes" >> release-artifacts/MIGRATION_GUIDE.md
+          echo "" >> release-artifacts/MIGRATION_GUIDE.md
+          
+          echo "### New Features" >> release-artifacts/MIGRATION_GUIDE.md
+          echo "- Check the changelog for new features that may benefit your implementation" >> release-artifacts/MIGRATION_GUIDE.md
+        else
+          echo "## Initial Release" >> release-artifacts/MIGRATION_GUIDE.md
+          echo "This is the initial release. No migration is required." >> release-artifacts/MIGRATION_GUIDE.md
+        fi
+
+    - name: Create Release Archive
+      run: |
+        # Create a comprehensive release package
+        mkdir -p release-package
+        
+        # Copy main Move files
+        cp *.move release-package/ 2>/dev/null || true
+        cp -r sources/ release-package/ 2>/dev/null || true
+        
+        # Copy configuration files
+        cp Move.toml release-package/ 2>/dev/null || true
+        cp README.md release-package/ 2>/dev/null || true
+        cp LICENSE release-package/ 2>/dev/null || true
+        
+        # Copy generated documentation
+        cp release-artifacts/*.md release-package/
+        
+        # Create archive
+        tar -czf release-artifacts/governance-system-${{ steps.version.outputs.version }}.tar.gz -C release-package .
+        zip -r release-artifacts/governance-system-${{ steps.version.outputs.version }}.zip release-package/
+
+    - name: Upload Release Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-artifacts-${{ steps.version.outputs.version }}
+        path: release-artifacts/
+        retention-days: 90
+
+  # Build and test for release
+  build-for-release:
+    name: Build and Test for Release
+    runs-on: ubuntu-latest
+    needs: generate-release-notes
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Build Release Version
+      run: |
+        echo "Building release version..."
+        sui move build --path .
+
+    - name: Run Full Test Suite
+      run: |
+        echo "Running comprehensive tests..."
+        sui move test --path . --gas-limit 100000000
+
+    - name: Generate Build Report
+      run: |
+        mkdir -p build-reports
+        
+        echo "# Build Report for Release" > build-reports/BUILD_REPORT.md
+        echo "Generated on: $(date)" >> build-reports/BUILD_REPORT.md
+        echo "" >> build-reports/BUILD_REPORT.md
+        
+        echo "## Build Status" >> build-reports/BUILD_REPORT.md
+        echo "✅ Build completed successfully" >> build-reports/BUILD_REPORT.md
+        echo "✅ All tests passed" >> build-reports/BUILD_REPORT.md
+        echo "" >> build-reports/BUILD_REPORT.md
+        
+        echo "## Environment Information" >> build-reports/BUILD_REPORT.md
+        echo "- **Rust Version:** $(rustc --version)" >> build-reports/BUILD_REPORT.md
+        echo "- **Sui Version:** $(sui --version)" >> build-reports/BUILD_REPORT.md
+        echo "- **Build Date:** $(date)" >> build-reports/BUILD_REPORT.md
+
+    - name: Upload Build Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-reports-release
+        path: build-reports/
+        retention-days: 90
+
+  # Create GitHub release
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [generate-release-notes, build-for-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Get Version Information
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Download Release Artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: release-artifacts-${{ steps.version.outputs.version }}
+        path: release-artifacts/
+
+    - name: Download Build Reports
+      uses: actions/download-artifact@v3
+      with:
+        name: build-reports-release
+        path: build-reports/
+
+    - name: Prepare Release Body
+      id: release_body
+      run: |
+        echo "Creating release body..."
+        
+        # Combine release notes and build report
+        cat release-artifacts/RELEASE_NOTES.md > release_body.md
+        echo "" >> release_body.md
+        echo "---" >> release_body.md
+        echo "" >> release_body.md
+        cat build-reports/BUILD_REPORT.md >> release_body.md
+        
+        # Set output for GitHub release
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "content<<$EOF" >> $GITHUB_OUTPUT
+        cat release_body.md >> $GITHUB_OUTPUT
+        echo "$EOF" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        release_name: Release ${{ steps.version.outputs.version }}
+        body: ${{ steps.release_body.outputs.content }}
+        draft: false
+        prerelease: ${{ github.event.inputs.prerelease || false }}
+
+    - name: Upload Release Assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: release-artifacts/governance-system-${{ steps.version.outputs.version }}.tar.gz
+        asset_name: governance-system-${{ steps.version.outputs.version }}.tar.gz
+        asset_content_type: application/gzip
+
+    - name: Upload ZIP Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: release-artifacts/governance-system-${{ steps.version.outputs.version }}.zip
+        asset_name: governance-system-${{ steps.version.outputs.version }}.zip
+        asset_content_type: application/zip
+
+  # Update documentation
+  update-docs:
+    name: Update Documentation
+    runs-on: ubuntu-latest
+    needs: create-release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Get Version Information
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Download Release Artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: release-artifacts-${{ steps.version.outputs.version }}
+        path: release-artifacts/
+
+    - name: Update Repository Documentation
+      run: |
+        # Update CHANGELOG.md in repository
+        if [ -f release-artifacts/CHANGELOG.md ]; then
+          cp release-artifacts/CHANGELOG.md CHANGELOG.md
+        fi
+        
+        # Create or update VERSION file
+        echo "${{ steps.version.outputs.version }}" > VERSION
+        
+        # Update README with latest version
+        if [ -f README.md ]; then
+          sed -i "s/Version: .*/Version: ${{ steps.version.outputs.version }}/" README.md || true
+        fi
+
+    - name: Commit Documentation Updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add -A
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update documentation for release ${{ steps.version.outputs.version }}"
+          git push
+        fi

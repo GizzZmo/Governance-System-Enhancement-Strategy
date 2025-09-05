@@ -1,0 +1,496 @@
+name: Documentation Generator & Publisher
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**.move'
+      - '**.md'
+      - 'Move.toml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**.move'
+      - '**.md'
+  schedule:
+    # Update documentation daily at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      publish_to_pages:
+        description: 'Publish to GitHub Pages'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # Generate comprehensive API documentation
+  generate-api-docs:
+    name: Generate API Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install Documentation Tools
+      run: |
+        npm install -g @mermaid-js/mermaid-cli
+        npm install -g markdown-toc
+        pip install mkdocs mkdocs-material pymdown-extensions
+
+    - name: Setup Rust and Sui
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Extract Module Documentation
+      run: |
+        mkdir -p docs/{api,modules,guides,examples}
+        
+        echo "# API Documentation" > docs/api/README.md
+        echo "Auto-generated API documentation for the Governance System Enhancement Strategy" >> docs/api/README.md
+        echo "" >> docs/api/README.md
+        echo "**Generated on:** $(date)" >> docs/api/README.md
+        echo "**Commit:** ${{ github.sha }}" >> docs/api/README.md
+        echo "" >> docs/api/README.md
+
+    - name: Generate Module Documentation
+      run: |
+        # Process each Move file
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          filename=$(basename "$file" .move)
+          
+          echo "Processing: $file"
+          
+          # Extract module information
+          echo "# Module: $filename" > "docs/modules/$filename.md"
+          echo "" >> "docs/modules/$filename.md"
+          echo "**File:** \`$file\`" >> "docs/modules/$filename.md"
+          echo "" >> "docs/modules/$filename.md"
+          
+          # Extract module declaration
+          module_line=$(grep -n "^module " "$file" | head -1)
+          if [ -n "$module_line" ]; then
+            echo "## Module Declaration" >> "docs/modules/$filename.md"
+            echo "\`\`\`move" >> "docs/modules/$filename.md"
+            echo "$module_line" | cut -d: -f2- >> "docs/modules/$filename.md"
+            echo "\`\`\`" >> "docs/modules/$filename.md"
+            echo "" >> "docs/modules/$filename.md"
+          fi
+          
+          # Extract imports
+          echo "## Imports" >> "docs/modules/$filename.md"
+          echo "\`\`\`move" >> "docs/modules/$filename.md"
+          grep "use " "$file" || echo "// No imports found" >> "docs/modules/$filename.md"
+          echo "\`\`\`" >> "docs/modules/$filename.md"
+          echo "" >> "docs/modules/$filename.md"
+          
+          # Extract structs
+          echo "## Structs" >> "docs/modules/$filename.md"
+          struct_count=$(grep -c "struct " "$file" || echo "0")
+          if [ "$struct_count" -gt 0 ]; then
+            echo "\`\`\`move" >> "docs/modules/$filename.md"
+            grep -A 5 "struct " "$file" >> "docs/modules/$filename.md"
+            echo "\`\`\`" >> "docs/modules/$filename.md"
+          else
+            echo "No structs defined in this module." >> "docs/modules/$filename.md"
+          fi
+          echo "" >> "docs/modules/$filename.md"
+          
+          # Extract public functions
+          echo "## Public Functions" >> "docs/modules/$filename.md"
+          public_funcs=$(grep -n "public fun\|public entry fun" "$file" || echo "")
+          if [ -n "$public_funcs" ]; then
+            echo "\`\`\`move" >> "docs/modules/$filename.md"
+            echo "$public_funcs" | cut -d: -f2- >> "docs/modules/$filename.md"
+            echo "\`\`\`" >> "docs/modules/$filename.md"
+          else
+            echo "No public functions in this module." >> "docs/modules/$filename.md"
+          fi
+          echo "" >> "docs/modules/$filename.md"
+          
+          # Extract constants
+          echo "## Constants" >> "docs/modules/$filename.md"
+          constants=$(grep -n "const " "$file" || echo "")
+          if [ -n "$constants" ]; then
+            echo "\`\`\`move" >> "docs/modules/$filename.md"
+            echo "$constants" | cut -d: -f2- >> "docs/modules/$filename.md"
+            echo "\`\`\`" >> "docs/modules/$filename.md"
+          else
+            echo "No constants defined in this module." >> "docs/modules/$filename.md"
+          fi
+          echo "" >> "docs/modules/$filename.md"
+          
+          # Extract error codes
+          echo "## Error Codes" >> "docs/modules/$filename.md"
+          errors=$(grep -n "const E[A-Z_]*.*:" "$file" || echo "")
+          if [ -n "$errors" ]; then
+            echo "\`\`\`move" >> "docs/modules/$filename.md"
+            echo "$errors" | cut -d: -f2- >> "docs/modules/$filename.md"
+            echo "\`\`\`" >> "docs/modules/$filename.md"
+          else
+            echo "No error codes defined in this module." >> "docs/modules/$filename.md"
+          fi
+        done
+
+    - name: Generate API Cross-Reference
+      run: |
+        echo "# API Cross-Reference" > docs/api/cross-reference.md
+        echo "" >> docs/api/cross-reference.md
+        echo "This document provides a cross-reference of all public functions across modules." >> docs/api/cross-reference.md
+        echo "" >> docs/api/cross-reference.md
+        
+        # Create function index
+        echo "## Function Index" >> docs/api/cross-reference.md
+        echo "" >> docs/api/cross-reference.md
+        
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          module_name=$(basename "$file" .move)
+          public_funcs=$(grep "public fun\|public entry fun" "$file" | sed 's/.*public[[:space:]]*\(entry[[:space:]]*\)*fun[[:space:]]*\([^(]*\).*/\2/' || echo "")
+          
+          if [ -n "$public_funcs" ]; then
+            echo "### $module_name" >> docs/api/cross-reference.md
+            echo "$public_funcs" | while read func; do
+              echo "- [\`$func\`](../modules/$module_name.md)" >> docs/api/cross-reference.md
+            done
+            echo "" >> docs/api/cross-reference.md
+          fi
+        done
+
+    - name: Generate Integration Guide
+      run: |
+        echo "# Integration Guide" > docs/guides/integration.md
+        echo "" >> docs/guides/integration.md
+        echo "This guide explains how to integrate with the Governance System Enhancement Strategy." >> docs/guides/integration.md
+        echo "" >> docs/guides/integration.md
+        
+        echo "## Prerequisites" >> docs/guides/integration.md
+        echo "- Sui development environment" >> docs/guides/integration.md
+        echo "- Move compiler" >> docs/guides/integration.md
+        echo "- Basic understanding of Move programming language" >> docs/guides/integration.md
+        echo "" >> docs/guides/integration.md
+        
+        echo "## Quick Start" >> docs/guides/integration.md
+        echo "1. Clone the repository" >> docs/guides/integration.md
+        echo "2. Install dependencies: \`sui move build\`" >> docs/guides/integration.md
+        echo "3. Run tests: \`sui move test\`" >> docs/guides/integration.md
+        echo "4. Deploy to testnet: \`./deploy.sh\`" >> docs/guides/integration.md
+        echo "" >> docs/guides/integration.md
+        
+        echo "## Available Modules" >> docs/guides/integration.md
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          module_name=$(basename "$file" .move)
+          echo "- [\`$module_name\`](../modules/$module_name.md)" >> docs/guides/integration.md
+        done
+
+    - name: Generate Examples
+      run: |
+        echo "# Usage Examples" > docs/examples/README.md
+        echo "" >> docs/examples/README.md
+        echo "This section contains practical examples of using the governance system." >> docs/examples/README.md
+        echo "" >> docs/examples/README.md
+        
+        # Extract test cases as examples
+        echo "## Test Examples" >> docs/examples/README.md
+        find . -name "*test*.move" -o -name "*-tests.move" | while read file; do
+          test_name=$(basename "$file" .move)
+          echo "### $test_name" >> docs/examples/README.md
+          echo "Test file: \`$file\`" >> docs/examples/README.md
+          echo "" >> docs/examples/README.md
+          
+          # Extract test function examples
+          test_funcs=$(grep -A 10 "#\[test\]" "$file" || echo "")
+          if [ -n "$test_funcs" ]; then
+            echo "\`\`\`move" >> docs/examples/README.md
+            echo "$test_funcs" | head -20 >> docs/examples/README.md
+            echo "\`\`\`" >> docs/examples/README.md
+          fi
+          echo "" >> docs/examples/README.md
+        done
+
+    - name: Create MkDocs Configuration
+      run: |
+        cat > mkdocs.yml << EOF
+        site_name: Governance System Enhancement Strategy
+        site_description: Documentation for the decentralized governance system
+        site_author: GizzZmo
+        site_url: https://gizzmo.github.io/Governance-System-Enhancement-Strategy
+        
+        theme:
+          name: material
+          palette:
+            primary: blue
+            accent: light blue
+          features:
+            - navigation.tabs
+            - navigation.sections
+            - navigation.expand
+            - search.highlight
+        
+        nav:
+          - Home: README.md
+          - API Reference:
+            - Overview: api/README.md
+            - Cross-Reference: api/cross-reference.md
+          - Modules:
+            - Overview: modules/README.md
+          - Guides:
+            - Integration: guides/integration.md
+          - Examples:
+            - Usage Examples: examples/README.md
+        
+        markdown_extensions:
+          - codehilite
+          - admonition
+          - toc:
+              permalink: true
+          - pymdownx.superfences
+        
+        plugins:
+          - search
+        EOF
+
+    - name: Create Module Index
+      run: |
+        echo "# Module Index" > docs/modules/README.md
+        echo "" >> docs/modules/README.md
+        echo "This section contains detailed documentation for each module in the system." >> docs/modules/README.md
+        echo "" >> docs/modules/README.md
+        
+        echo "## Available Modules" >> docs/modules/README.md
+        find docs/modules -name "*.md" -not -name "README.md" | while read file; do
+          module_name=$(basename "$file" .md)
+          echo "- [$module_name]($module_name.md)" >> docs/modules/README.md
+        done
+
+    - name: Build Documentation Site
+      run: |
+        # Copy main README to docs
+        cp README.md docs/
+        
+        # Build the documentation
+        mkdocs build
+
+    - name: Upload Documentation Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: documentation-${{ github.sha }}
+        path: |
+          docs/
+          site/
+        retention-days: 30
+
+  # Generate diagrams and visual documentation
+  generate-diagrams:
+    name: Generate Diagrams
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install Diagram Tools
+      run: |
+        npm install -g @mermaid-js/mermaid-cli
+        npm install -g kroki-cli
+
+    - name: Generate Module Dependency Diagram
+      run: |
+        mkdir -p diagrams
+        
+        # Create a Mermaid diagram for module dependencies
+        echo "graph TD" > diagrams/module-dependencies.mmd
+        
+        # Extract module dependencies
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          module_name=$(basename "$file" .move)
+          imports=$(grep "use.*::" "$file" | sed 's/.*use[[:space:]]*\([^:]*\)::.*/\1/' | grep -v "std\|sui" || echo "")
+          
+          if [ -n "$imports" ]; then
+            echo "$imports" | while read import; do
+              echo "    $import --> $module_name" >> diagrams/module-dependencies.mmd
+            done
+          fi
+        done
+        
+        # Generate the diagram
+        mmdc -i diagrams/module-dependencies.mmd -o diagrams/module-dependencies.png -t dark -b transparent
+
+    - name: Generate Function Call Graph
+      run: |
+        # Create a simplified function call graph
+        echo "graph LR" > diagrams/function-calls.mmd
+        
+        # This is a simplified version - in practice, you'd want more sophisticated parsing
+        find . -name "*.move" -not -path "./build/*" | while read file; do
+          module_name=$(basename "$file" .move)
+          public_funcs=$(grep "public fun\|public entry fun" "$file" | sed 's/.*public[[:space:]]*\(entry[[:space:]]*\)*fun[[:space:]]*\([^(]*\).*/\2/' || echo "")
+          
+          if [ -n "$public_funcs" ]; then
+            echo "$public_funcs" | while read func; do
+              echo "    $module_name.$func" >> diagrams/function-calls.mmd
+            done
+          fi
+        done
+        
+        # Generate the diagram
+        mmdc -i diagrams/function-calls.mmd -o diagrams/function-calls.png -t dark -b transparent || true
+
+    - name: Generate Architecture Overview
+      run: |
+        # Create an architecture overview diagram
+        cat > diagrams/architecture.mmd << EOF
+        graph TB
+            subgraph "Governance System"
+                Gov[Governance Module]
+                Prop[Proposal Handler]
+                Stake[Delegation & Staking]
+                Treas[Treasury Management]
+            end
+            
+            subgraph "External Interfaces"
+                User[Users/DAOs]
+                Sui[Sui Network]
+            end
+            
+            User --> Gov
+            Gov --> Prop
+            Gov --> Stake
+            Gov --> Treas
+            Treas --> Sui
+            Stake --> Sui
+        EOF
+        
+        mmdc -i diagrams/architecture.mmd -o diagrams/architecture.png -t dark -b transparent
+
+    - name: Upload Diagram Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: diagrams-${{ github.sha }}
+        path: diagrams/
+        retention-days: 30
+
+  # Publish to GitHub Pages
+  publish-docs:
+    name: Publish Documentation
+    runs-on: ubuntu-latest
+    needs: [generate-api-docs, generate-diagrams]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to_pages == 'true'))
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Download Documentation
+      uses: actions/download-artifact@v3
+      with:
+        name: documentation-${{ github.sha }}
+        path: .
+
+    - name: Download Diagrams
+      uses: actions/download-artifact@v3
+      with:
+        name: diagrams-${{ github.sha }}
+        path: docs/diagrams/
+
+    - name: Setup Pages
+      uses: actions/configure-pages@v3
+
+    - name: Upload to Pages
+      uses: actions/upload-pages-artifact@v2
+      with:
+        path: site/
+
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v2
+
+  # Generate documentation reports
+  doc-quality-check:
+    name: Documentation Quality Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Install Documentation Linters
+      run: |
+        npm install -g markdownlint-cli
+        npm install -g alex
+
+    - name: Lint Markdown Files
+      continue-on-error: true
+      run: |
+        mkdir -p doc-reports
+        
+        echo "# Documentation Quality Report" > doc-reports/doc-quality.md
+        echo "Generated on: $(date)" >> doc-reports/doc-quality.md
+        echo "" >> doc-reports/doc-quality.md
+        
+        # Lint markdown files
+        echo "## Markdown Lint Results" >> doc-reports/doc-quality.md
+        markdownlint . --json > markdownlint-results.json || true
+        
+        if [ -s markdownlint-results.json ]; then
+          echo "Issues found in markdown files:" >> doc-reports/doc-quality.md
+          echo "\`\`\`json" >> doc-reports/doc-quality.md
+          cat markdownlint-results.json >> doc-reports/doc-quality.md
+          echo "\`\`\`" >> doc-reports/doc-quality.md
+        else
+          echo "✅ No markdown linting issues found" >> doc-reports/doc-quality.md
+        fi
+
+    - name: Check Documentation Coverage
+      run: |
+        echo "" >> doc-reports/doc-quality.md
+        echo "## Documentation Coverage" >> doc-reports/doc-quality.md
+        
+        total_move_files=$(find . -name "*.move" -not -path "./build/*" | wc -l)
+        documented_modules=$(find docs/modules -name "*.md" -not -name "README.md" | wc -l || echo "0")
+        
+        echo "- **Total Move files:** $total_move_files" >> doc-reports/doc-quality.md
+        echo "- **Documented modules:** $documented_modules" >> doc-reports/doc-quality.md
+        
+        if [ "$total_move_files" -gt 0 ]; then
+          coverage=$((documented_modules * 100 / total_move_files))
+          echo "- **Documentation coverage:** ${coverage}%" >> doc-reports/doc-quality.md
+          
+          if [ "$coverage" -ge 80 ]; then
+            echo "✅ Good documentation coverage" >> doc-reports/doc-quality.md
+          elif [ "$coverage" -ge 50 ]; then
+            echo "⚠️ Moderate documentation coverage" >> doc-reports/doc-quality.md
+          else
+            echo "❌ Low documentation coverage" >> doc-reports/doc-quality.md
+          fi
+        fi
+
+    - name: Upload Documentation Quality Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: doc-quality-reports-${{ github.sha }}
+        path: doc-reports/
+        retention-days: 30

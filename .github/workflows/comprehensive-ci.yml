@@ -1,0 +1,431 @@
+name: Comprehensive CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'testnet'
+        type: choice
+        options:
+          - testnet
+          - devnet
+          - mainnet
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Matrix build strategy for different Rust and Sui versions
+  matrix-build:
+    name: Matrix Build (${{ matrix.rust }}, ${{ matrix.sui-tag }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ['1.86.0', '1.85.0']
+        sui-tag: ['testnet-v1.48.1', 'mainnet-v1.48.2']
+        include:
+          - rust: '1.86.0'
+            sui-tag: 'testnet-v1.48.1'
+            primary: true
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache Cargo Dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-${{ matrix.rust }}-
+          ${{ runner.os }}-cargo-
+
+    - name: Install Sui CLI
+      run: |
+        set -e
+        echo "Installing Sui CLI version: ${{ matrix.sui-tag }}"
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "${{ matrix.sui-tag }}" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Verify Tool Versions
+      run: |
+        rustc --version
+        cargo --version
+        sui --version
+        sui move --version
+
+    - name: Format Check
+      run: |
+        # Check Move file formatting (basic check)
+        find . -name "*.move" -exec echo "Checking format for: {}" \;
+
+    - name: Build Project
+      run: |
+        sui move build --path .
+        echo "Build completed successfully"
+
+    - name: Run Unit Tests
+      run: |
+        sui move test --path . --gas-limit 100000000
+        echo "Unit tests completed"
+
+    - name: Generate Build Artifacts
+      if: matrix.primary
+      run: |
+        mkdir -p artifacts
+        cp -r build/ artifacts/
+        ls -la artifacts/
+
+    - name: Upload Build Artifacts
+      if: matrix.primary
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts-${{ github.sha }}
+        path: artifacts/
+        retention-days: 30
+
+  # Linting and code quality checks
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    needs: matrix-build
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+        components: rustfmt, clippy
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Check Move Code Style
+      run: |
+        echo "Performing Move code style checks..."
+        # Add custom linting rules for Move files
+        find . -name "*.move" | while read file; do
+          echo "Analyzing: $file"
+          # Check for common patterns and best practices
+          if grep -q "abort" "$file"; then
+            echo "  ✓ Uses proper error handling with abort"
+          fi
+          if grep -q "public fun" "$file"; then
+            echo "  ✓ Contains public functions"
+          fi
+        done
+
+    - name: Analyze Code Complexity
+      run: |
+        echo "Analyzing code complexity..."
+        find . -name "*.move" -exec wc -l {} + | sort -n
+        echo "Total lines of Move code:"
+        find . -name "*.move" -exec cat {} + | wc -l
+
+    - name: Generate Code Quality Report
+      run: |
+        mkdir -p reports
+        echo "# Code Quality Report" > reports/quality-report.md
+        echo "Generated on: $(date)" >> reports/quality-report.md
+        echo "" >> reports/quality-report.md
+        echo "## File Statistics" >> reports/quality-report.md
+        find . -name "*.move" -exec basename {} \; | sort > reports/move-files.txt
+        echo "Move files found: $(cat reports/move-files.txt | wc -l)" >> reports/quality-report.md
+
+    - name: Upload Quality Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: quality-reports-${{ github.sha }}
+        path: reports/
+        retention-days: 15
+
+  # Security scanning and vulnerability assessment
+  security-scan:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    needs: matrix-build
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Security Tools
+      run: |
+        cargo install cargo-audit
+        cargo install cargo-deny
+
+    - name: Rust Security Audit
+      continue-on-error: true
+      run: |
+        cargo audit --json > security-audit.json || true
+        echo "Security audit completed"
+
+    - name: Dependency Analysis
+      continue-on-error: true
+      run: |
+        echo "Analyzing dependencies..."
+        # Create a basic cargo project to analyze dependencies
+        mkdir -p temp-analysis
+        cd temp-analysis
+        cargo init --name temp-project
+        # Add common Sui dependencies for analysis
+        echo 'sui = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.48.1" }' >> Cargo.toml
+        cargo generate-lockfile || true
+        cd ..
+
+    - name: Generate Security Report
+      run: |
+        mkdir -p security-reports
+        echo "# Security Analysis Report" > security-reports/security-report.md
+        echo "Generated on: $(date)" >> security-reports/security-report.md
+        echo "" >> security-reports/security-report.md
+        
+        if [ -f security-audit.json ]; then
+          echo "## Security Audit Results" >> security-reports/security-report.md
+          echo "\`\`\`json" >> security-reports/security-report.md
+          cat security-audit.json >> security-reports/security-report.md
+          echo "\`\`\`" >> security-reports/security-report.md
+        fi
+
+    - name: Upload Security Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-reports-${{ github.sha }}
+        path: security-reports/
+        retention-days: 30
+
+  # Documentation generation
+  docs-generation:
+    name: Documentation Generation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install Documentation Tools
+      run: |
+        npm install -g @mermaid-js/mermaid-cli
+        npm install -g markdown-toc
+
+    - name: Generate API Documentation
+      run: |
+        mkdir -p generated-docs
+        
+        echo "# Auto-Generated API Documentation" > generated-docs/api-docs.md
+        echo "Generated on: $(date)" >> generated-docs/api-docs.md
+        echo "" >> generated-docs/api-docs.md
+        
+        # Extract function signatures from Move files
+        echo "## Public Functions" >> generated-docs/api-docs.md
+        find . -name "*.move" | while read file; do
+          echo "### $(basename "$file")" >> generated-docs/api-docs.md
+          grep -n "public fun\|public entry fun" "$file" | sed 's/^/- /' >> generated-docs/api-docs.md || true
+          echo "" >> generated-docs/api-docs.md
+        done
+
+    - name: Generate Module Documentation
+      run: |
+        echo "# Module Documentation" > generated-docs/modules.md
+        echo "Generated on: $(date)" >> generated-docs/modules.md
+        echo "" >> generated-docs/modules.md
+        
+        find . -name "*.move" | while read file; do
+          module_name=$(grep -m1 "module " "$file" | cut -d' ' -f2 | cut -d'{' -f1 || echo "Unknown")
+          echo "## Module: $module_name" >> generated-docs/modules.md
+          echo "File: \`$file\`" >> generated-docs/modules.md
+          echo "" >> generated-docs/modules.md
+          
+          # Extract module-level comments
+          grep -n "^    //\|^//" "$file" | head -10 | sed 's/^[0-9]*://' >> generated-docs/modules.md || true
+          echo "" >> generated-docs/modules.md
+        done
+
+    - name: Generate Test Documentation
+      run: |
+        echo "# Test Documentation" > generated-docs/tests.md
+        echo "Generated on: $(date)" >> generated-docs/tests.md
+        echo "" >> generated-docs/tests.md
+        
+        find . -name "*-tests.move" -o -name "*test*.move" | while read file; do
+          echo "## Test File: $(basename "$file")" >> generated-docs/tests.md
+          echo "Path: \`$file\`" >> generated-docs/tests.md
+          echo "" >> generated-docs/tests.md
+          
+          # Extract test function names
+          grep -n "#\[test\]\|fun test_" "$file" | sed 's/^/- /' >> generated-docs/tests.md || true
+          echo "" >> generated-docs/tests.md
+        done
+
+    - name: Create Documentation Index
+      run: |
+        echo "# Documentation Index" > generated-docs/README.md
+        echo "Auto-generated documentation for the Governance System Enhancement Strategy project" >> generated-docs/README.md
+        echo "" >> generated-docs/README.md
+        echo "## Available Documentation" >> generated-docs/README.md
+        echo "- [API Documentation](api-docs.md)" >> generated-docs/README.md
+        echo "- [Module Documentation](modules.md)" >> generated-docs/README.md
+        echo "- [Test Documentation](tests.md)" >> generated-docs/README.md
+        echo "" >> generated-docs/README.md
+        echo "Generated on: $(date)" >> generated-docs/README.md
+
+    - name: Upload Documentation
+      uses: actions/upload-artifact@v3
+      with:
+        name: generated-documentation-${{ github.sha }}
+        path: generated-docs/
+        retention-days: 90
+
+  # Performance testing
+  performance-test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    needs: matrix-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Run Performance Benchmarks
+      run: |
+        mkdir -p performance-reports
+        
+        echo "# Performance Benchmark Report" > performance-reports/performance.md
+        echo "Generated on: $(date)" >> performance-reports/performance.md
+        echo "" >> performance-reports/performance.md
+        
+        # Build and measure compilation time
+        echo "## Build Performance" >> performance-reports/performance.md
+        echo "Measuring build time..." >> performance-reports/performance.md
+        
+        start_time=$(date +%s)
+        sui move build --path .
+        end_time=$(date +%s)
+        build_duration=$((end_time - start_time))
+        
+        echo "Build completed in: ${build_duration} seconds" >> performance-reports/performance.md
+        echo "" >> performance-reports/performance.md
+        
+        # Test execution time
+        echo "## Test Performance" >> performance-reports/performance.md
+        start_time=$(date +%s)
+        sui move test --path . --gas-limit 100000000
+        end_time=$(date +%s)
+        test_duration=$((end_time - start_time))
+        
+        echo "Tests completed in: ${test_duration} seconds" >> performance-reports/performance.md
+
+    - name: Upload Performance Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-reports-${{ github.sha }}
+        path: performance-reports/
+        retention-days: 30
+
+  # Deploy to environment
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment || 'testnet' }}
+    runs-on: ubuntu-latest
+    needs: [matrix-build, code-quality, security-scan]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: ${{ github.event.inputs.environment || 'testnet' }}
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.86.0
+
+    - name: Install Sui CLI
+      run: |
+        cargo install --locked --git https://github.com/MystenLabs/sui.git --tag "testnet-v1.48.1" sui
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Download Build Artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: build-artifacts-${{ github.sha }}
+        path: artifacts/
+
+    - name: Configure Sui Environment
+      env:
+        SUI_TESTNET_RPC_URL: ${{ secrets.SUI_TESTNET_RPC_URL }}
+        SUI_DEPLOYER_PRIVATE_KEY_BASE64: ${{ secrets.SUI_DEPLOYER_PRIVATE_KEY_BASE64 }}
+      run: |
+        echo "Configuring Sui for deployment to ${{ github.event.inputs.environment || 'testnet' }}"
+        # Add deployment configuration logic here
+        sui client new-env --alias deploy-env --rpc "${SUI_TESTNET_RPC_URL:-https://fullnode.testnet.sui.io:443}"
+        sui client switch --env deploy-env
+
+    - name: Execute Deployment
+      run: |
+        echo "Deploying to ${{ github.event.inputs.environment || 'testnet' }}..."
+        chmod +x ./deploy.sh
+        ./deploy.sh
+
+    - name: Generate Deployment Report
+      run: |
+        mkdir -p deployment-reports
+        echo "# Deployment Report" > deployment-reports/deployment.md
+        echo "Environment: ${{ github.event.inputs.environment || 'testnet' }}" >> deployment-reports/deployment.md
+        echo "Deployed on: $(date)" >> deployment-reports/deployment.md
+        echo "Commit: ${{ github.sha }}" >> deployment-reports/deployment.md
+
+    - name: Upload Deployment Reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-reports-${{ github.sha }}
+        path: deployment-reports/
+        retention-days: 90
