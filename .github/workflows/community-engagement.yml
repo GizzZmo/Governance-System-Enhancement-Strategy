@@ -1,6 +1,7 @@
+---
 name: Community Engagement & PR Automation
 
-on:
+"on":
   issues:
     types: [opened, labeled, assigned]
   pull_request:
@@ -20,19 +21,19 @@ jobs:
     if: github.event_name == 'issues' && github.event.action == 'opened'
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Auto-label Issues
-      uses: actions/github-script@v6
-      with:
+      - name: Auto-label Issues
+        uses: actions/github-script@v6
+        with:
         script: |
           const issue = context.payload.issue;
           const title = issue.title.toLowerCase();
           const body = issue.body ? issue.body.toLowerCase() : '';
-          
+
           const labels = [];
-          
+
           // Categorize by type
           if (title.includes('bug') || body.includes('error') || body.includes('fail')) {
             labels.push('bug');
@@ -43,7 +44,7 @@ jobs:
           } else if (title.includes('question') || title.includes('help')) {
             labels.push('question');
           }
-          
+
           // Categorize by component
           if (body.includes('governance') || title.includes('governance')) {
             labels.push('governance');
@@ -54,7 +55,7 @@ jobs:
           } else if (body.includes('test') || title.includes('test')) {
             labels.push('testing');
           }
-          
+
           // Priority labeling
           if (title.includes('urgent') || title.includes('critical') || body.includes('urgent')) {
             labels.push('priority:high');
@@ -63,14 +64,14 @@ jobs:
           } else {
             labels.push('priority:medium');
           }
-          
+
           // Difficulty estimation
           if (body.includes('simple') || body.includes('easy')) {
             labels.push('good first issue');
           } else if (body.includes('complex') || body.includes('difficult')) {
             labels.push('difficulty:hard');
           }
-          
+
           // Apply labels
           if (labels.length > 0) {
             await github.rest.issues.addLabels({
@@ -81,12 +82,12 @@ jobs:
             });
           }
 
-    - name: Welcome New Contributors
-      uses: actions/github-script@v6
-      with:
+      - name: Welcome New Contributors
+        uses: actions/github-script@v6
+        with:
         script: |
           const issue = context.payload.issue;
-          
+
           // Check if this is the user's first issue
           const { data: issues } = await github.rest.issues.listForRepo({
             owner: context.repo.owner,
@@ -94,7 +95,7 @@ jobs:
             creator: issue.user.login,
             state: 'all'
           });
-          
+
           if (issues.length === 1) {
             const welcomeMessage = `👋 Welcome to the Governance System Enhancement Strategy project, @${issue.user.login}!
 
@@ -122,51 +123,51 @@ A maintainer will review your issue soon. If you're interested in contributing c
     if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize')
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      with:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
         fetch-depth: 0
 
-    - name: Analyze PR Changes
-      id: pr_analysis
-      run: |
+      - name: Analyze PR Changes
+        id: pr_analysis
+        run: |
         mkdir -p pr-analysis
-        
+
         echo "# PR Analysis Report" > pr-analysis/pr-analysis.md
         echo "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" >> pr-analysis/pr-analysis.md
         echo "Generated on: $(date)" >> pr-analysis/pr-analysis.md
         echo "" >> pr-analysis/pr-analysis.md
-        
+
         # Get changed files
         echo "## Changed Files" >> pr-analysis/pr-analysis.md
         git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > changed-files.txt
-        
+
         if [ -s changed-files.txt ]; then
           move_files=$(grep "\.move$" changed-files.txt || echo "")
           workflow_files=$(grep "\.yml$\|\.yaml$" changed-files.txt || echo "")
           doc_files=$(grep "\.md$" changed-files.txt || echo "")
-          
+
           echo "- **Move files:** $(echo "$move_files" | wc -l)" >> pr-analysis/pr-analysis.md
           echo "- **Workflow files:** $(echo "$workflow_files" | wc -l)" >> pr-analysis/pr-analysis.md
           echo "- **Documentation files:** $(echo "$doc_files" | wc -l)" >> pr-analysis/pr-analysis.md
           echo "" >> pr-analysis/pr-analysis.md
-          
+
           # Set analysis flags
           if [ -n "$move_files" ]; then echo "HAS_MOVE_CHANGES=true" >> $GITHUB_ENV; fi
           if [ -n "$workflow_files" ]; then echo "HAS_WORKFLOW_CHANGES=true" >> $GITHUB_ENV; fi
           if [ -n "$doc_files" ]; then echo "HAS_DOC_CHANGES=true" >> $GITHUB_ENV; fi
         fi
-        
+
         # Analyze code changes
         echo "## Code Change Analysis" >> pr-analysis/pr-analysis.md
-        
+
         lines_added=$(git diff --shortstat ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -o "[0-9]* insertion" | cut -d' ' -f1 || echo "0")
         lines_deleted=$(git diff --shortstat ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -o "[0-9]* deletion" | cut -d' ' -f1 || echo "0")
-        
+
         echo "- **Lines added:** $lines_added" >> pr-analysis/pr-analysis.md
         echo "- **Lines deleted:** $lines_deleted" >> pr-analysis/pr-analysis.md
         echo "" >> pr-analysis/pr-analysis.md
-        
+
         # Calculate change impact
         total_changes=$((lines_added + lines_deleted))
         if [ "$total_changes" -gt 500 ]; then
@@ -180,15 +181,15 @@ A maintainer will review your issue soon. If you're interested in contributing c
           echo "PR_SIZE=small" >> $GITHUB_ENV
         fi
 
-    - name: Check for Breaking Changes
-      if: env.HAS_MOVE_CHANGES == 'true'
-      run: |
+      - name: Check for Breaking Changes
+        if: env.HAS_MOVE_CHANGES == 'true'
+        run: |
         echo "" >> pr-analysis/pr-analysis.md
         echo "## Breaking Change Analysis" >> pr-analysis/pr-analysis.md
-        
+
         # Check for potential breaking changes in Move code
         breaking_patterns="public fun.*->.*|struct.*{.*}.*->|const.*:.*u.*->|module.*{.*->.*}"
-        
+
         if git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- "*.move" | grep -E "\-.*$breaking_patterns" > /dev/null; then
           echo "⚠️ **Potential breaking changes detected in Move code**" >> pr-analysis/pr-analysis.md
           echo "POTENTIAL_BREAKING_CHANGES=true" >> $GITHUB_ENV
@@ -196,54 +197,54 @@ A maintainer will review your issue soon. If you're interested in contributing c
           echo "✅ No obvious breaking changes detected" >> pr-analysis/pr-analysis.md
           echo "POTENTIAL_BREAKING_CHANGES=false" >> $GITHUB_ENV
         fi
-        
+
         # Check for new public functions
         new_public_funcs=$(git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- "*.move" | grep "^+.*public fun" | wc -l)
         if [ "$new_public_funcs" -gt 0 ]; then
           echo "- **New public functions added:** $new_public_funcs" >> pr-analysis/pr-analysis.md
         fi
 
-    - name: Suggest Reviewers
-      run: |
+      - name: Suggest Reviewers
+        run: |
         echo "" >> pr-analysis/pr-analysis.md
         echo "## Suggested Reviewers" >> pr-analysis/pr-analysis.md
-        
+
         # Suggest reviewers based on file changes
         if [ "$HAS_MOVE_CHANGES" = "true" ]; then
           echo "- Move code changes detected - suggest blockchain/Move experts" >> pr-analysis/pr-analysis.md
         fi
-        
+
         if [ "$HAS_WORKFLOW_CHANGES" = "true" ]; then
           echo "- Workflow changes detected - suggest DevOps/CI experts" >> pr-analysis/pr-analysis.md
         fi
-        
+
         if [ "$HAS_DOC_CHANGES" = "true" ]; then
           echo "- Documentation changes detected - suggest technical writers" >> pr-analysis/pr-analysis.md
         fi
-        
+
         if [ "$POTENTIAL_BREAKING_CHANGES" = "true" ]; then
           echo "- **Breaking changes detected - requires senior reviewer approval**" >> pr-analysis/pr-analysis.md
         fi
 
-    - name: Upload PR Analysis
-      uses: actions/upload-artifact@v3
-      with:
+      - name: Upload PR Analysis
+        uses: actions/upload-artifact@v3
+        with:
         name: pr-analysis-${{ github.event.pull_request.number }}
         path: pr-analysis/
         retention-days: 30
 
-    - name: Auto-label PR
-      uses: actions/github-script@v6
-      with:
+      - name: Auto-label PR
+        uses: actions/github-script@v6
+        with:
         script: |
           const labels = [];
-          
+
           // Size labels
           const prSize = process.env.PR_SIZE;
           if (prSize) {
             labels.push(`size:${prSize}`);
           }
-          
+
           // Component labels
           if (process.env.HAS_MOVE_CHANGES === 'true') {
             labels.push('move-code');
@@ -254,12 +255,12 @@ A maintainer will review your issue soon. If you're interested in contributing c
           if (process.env.HAS_DOC_CHANGES === 'true') {
             labels.push('documentation');
           }
-          
+
           // Breaking change label
           if (process.env.POTENTIAL_BREAKING_CHANGES === 'true') {
             labels.push('breaking-change');
           }
-          
+
           // Apply labels
           if (labels.length > 0) {
             await github.rest.issues.addLabels({
@@ -270,19 +271,19 @@ A maintainer will review your issue soon. If you're interested in contributing c
             });
           }
 
-    - name: Comment PR Analysis
-      uses: actions/github-script@v6
-      with:
+      - name: Comment PR Analysis
+        uses: actions/github-script@v6
+        with:
         script: |
           const fs = require('fs');
-          
+
           let analysisContent = '';
           try {
             analysisContent = fs.readFileSync('pr-analysis/pr-analysis.md', 'utf8');
           } catch (error) {
             analysisContent = 'PR analysis failed to generate';
           }
-          
+
           const comment = `## 🤖 Automated PR Analysis
 
 ${analysisContent}
@@ -304,20 +305,20 @@ ${analysisContent}
     if: github.event_name == 'pull_request_review' && github.event.action == 'submitted'
 
     steps:
-    - name: Thank Reviewer
-      uses: actions/github-script@v6
-      with:
+      - name: Thank Reviewer
+        uses: actions/github-script@v6
+        with:
         script: |
           const review = context.payload.review;
           const reviewer = review.user.login;
-          
+
           // Don't thank bots or the PR author
           if (reviewer.includes('bot') || reviewer === context.payload.pull_request.user.login) {
             return;
           }
-          
+
           let message = '';
-          
+
           if (review.state === 'approved') {
             message = `🎉 Thank you for approving this PR, @${reviewer}! Your review helps maintain code quality.`;
           } else if (review.state === 'changes_requested') {
@@ -325,7 +326,7 @@ ${analysisContent}
           } else if (review.state === 'commented') {
             message = `💭 Thank you for taking the time to review and comment, @${reviewer}! Your insights are valuable.`;
           }
-          
+
           if (message) {
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -342,25 +343,25 @@ ${analysisContent}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Generate Community Statistics
-      run: |
+      - name: Generate Community Statistics
+        run: |
         mkdir -p community-reports
-        
+
         echo "# Weekly Community Report" > community-reports/community-report.md
         echo "Generated on: $(date)" >> community-reports/community-report.md
         echo "Period: $(date -d '7 days ago' +%Y-%m-%d) to $(date +%Y-%m-%d)" >> community-reports/community-report.md
         echo "" >> community-reports/community-report.md
 
-    - name: Fetch GitHub Statistics
-      uses: actions/github-script@v6
-      with:
+      - name: Fetch GitHub Statistics
+        uses: actions/github-script@v6
+        with:
         script: |
           const fs = require('fs');
           const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-          
+
           // Get recent issues
           const { data: issues } = await github.rest.issues.listForRepo({
             owner: context.repo.owner,
@@ -368,7 +369,7 @@ ${analysisContent}
             since: oneWeekAgo,
             state: 'all'
           });
-          
+
           // Get recent PRs
           const { data: prs } = await github.rest.pulls.list({
             owner: context.repo.owner,
@@ -377,15 +378,15 @@ ${analysisContent}
             sort: 'created',
             direction: 'desc'
           });
-          
+
           const recentPRs = prs.filter(pr => new Date(pr.created_at) > new Date(oneWeekAgo));
-          
+
           // Get contributors
           const { data: contributors } = await github.rest.repos.listContributors({
             owner: context.repo.owner,
             repo: context.repo.repo
           });
-          
+
           let report = `## GitHub Activity Summary
 
 - **New Issues:** ${issues.filter(i => !i.pull_request).length}
@@ -417,8 +418,8 @@ ${analysisContent}
 
           fs.appendFileSync('community-reports/community-report.md', report);
 
-    - name: Generate Engagement Metrics
-      run: |
+      - name: Generate Engagement Metrics
+        run: |
         echo "" >> community-reports/community-report.md
         echo "## Engagement Metrics" >> community-reports/community-report.md
         echo "- Repository stars: Loading..." >> community-reports/community-report.md
@@ -431,30 +432,30 @@ ${analysisContent}
         echo "- [Discord Community](https://discord.gg/Dy5Epsyc)" >> community-reports/community-report.md
         echo "- [Follow on X](https://x.com/Jon_Arve)" >> community-reports/community-report.md
 
-    - name: Upload Community Report
-      uses: actions/upload-artifact@v3
-      with:
+      - name: Upload Community Report
+        uses: actions/upload-artifact@v3
+        with:
         name: community-report-$(date +%Y%m%d)
         path: community-reports/
         retention-days: 90
 
-    - name: Create Weekly Discussion
-      uses: actions/github-script@v6
-      with:
+      - name: Create Weekly Discussion
+        uses: actions/github-script@v6
+        with:
         script: |
           const fs = require('fs');
-          
+
           let reportContent = '';
           try {
             reportContent = fs.readFileSync('community-reports/community-report.md', 'utf8');
           } catch (error) {
             reportContent = 'Weekly community report generation failed';
           }
-          
+
           // Create a discussion post (if discussions are enabled)
           try {
             const discussionTitle = `Weekly Community Report - ${new Date().toLocaleDateString()}`;
-            
+
             // Note: Creating discussions requires the GraphQL API and specific permissions
             console.log('Would create discussion:', discussionTitle);
             console.log('Content preview:', reportContent.slice(0, 200) + '...');
@@ -469,31 +470,31 @@ ${analysisContent}
     if: github.event_name == 'schedule'
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Close Stale Issues
-      uses: actions/github-script@v6
-      with:
+      - name: Close Stale Issues
+        uses: actions/github-script@v6
+        with:
         script: |
           const staleLabel = 'stale';
           const daysBeforeStale = 30;
           const daysBeforeClose = 7;
-          
+
           const staleDate = new Date(Date.now() - daysBeforeStale * 24 * 60 * 60 * 1000);
           const closeDate = new Date(Date.now() - (daysBeforeStale + daysBeforeClose) * 24 * 60 * 60 * 1000);
-          
+
           // Get all open issues
           const { data: issues } = await github.rest.issues.listForRepo({
             owner: context.repo.owner,
             repo: context.repo.repo,
             state: 'open'
           });
-          
+
           for (const issue of issues) {
             const lastUpdate = new Date(issue.updated_at);
             const hasStaleLabel = issue.labels.some(label => label.name === staleLabel);
-            
+
             if (lastUpdate < closeDate && hasStaleLabel) {
               // Close stale issues
               await github.rest.issues.update({
@@ -502,7 +503,7 @@ ${analysisContent}
                 issue_number: issue.number,
                 state: 'closed'
               });
-              
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -517,7 +518,7 @@ ${analysisContent}
                 issue_number: issue.number,
                 labels: [staleLabel]
               });
-              
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -527,14 +528,14 @@ ${analysisContent}
             }
           }
 
-    - name: Update Community Health Files
-      run: |
+      - name: Update Community Health Files
+        run: |
         # Check if community health files need updates
         echo "Checking community health files..."
-        
+
         # Update issue templates if they don't exist
         mkdir -p .github/ISSUE_TEMPLATE
-        
+
         if [ ! -f .github/ISSUE_TEMPLATE/bug_report.yml ]; then
           cat > .github/ISSUE_TEMPLATE/bug_report.yml << 'EOF'
         name: Bug Report
@@ -567,11 +568,11 @@ ${analysisContent}
         EOF
         fi
 
-    - name: Commit Maintenance Updates
-      run: |
+      - name: Commit Maintenance Updates
+        run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        
+
         git add -A
         if git diff --staged --quiet; then
           echo "No maintenance updates needed"
@@ -580,7 +581,7 @@ ${analysisContent}
 
           - Update community health files
           - Add issue templates if missing
-          
+
           Auto-generated by community-engagement workflow"
           git push
         fi
