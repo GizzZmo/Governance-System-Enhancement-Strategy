@@ -41,6 +41,19 @@ Key use cases:
 - **Analytics & Monitoring**: Track governance metrics, voter participation, and proposal success rates.
 - **Interactive CLI**: User-friendly command-line interface for all governance operations.
 - **Comprehensive Documentation**: Extensive guides, API docs, and tutorials for all skill levels.
+- **EbA Governance Principles**: Built on ecosystem-based adaptation governance framework emphasizing inclusivity, equity, transparency, and accountability.
+
+### Governance Principles (Based on GIZ EbA Study)
+
+Our governance system integrates proven ecosystem-based adaptation (EbA) principles:
+
+1. **Inclusive Decision-Making**: Quadratic voting and delegation ensure all voices are heard
+2. **Multi-Stakeholder Participation**: Multiple proposal types and reputation systems engage diverse stakeholders
+3. **Equity and Social Justice**: Progressive quorum and anti-plutocracy mechanisms ensure fairness
+4. **Transparency and Accountability**: Complete event logging and verifiable on-chain records
+5. **Adaptive Management**: Dynamic quorum and parameter proposals allow system evolution
+
+For details, see [EbA Governance Framework](EBA_GOVERNANCE_FRAMEWORK.md).
 
 ### Detailed Feature Examples
 - **Hybrid Voting**: Quadratic voting to prevent dominance by large stakeholders, ensuring proportional representation.
@@ -108,6 +121,11 @@ Comprehensive documentation is available to help you understand and use the syst
 - **[FEATURES.md](FEATURES.md)** - Complete feature overview and roadmap
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
 
+### Governance Framework (EbA Principles)
+- **[EBA_GOVERNANCE_FRAMEWORK.md](EBA_GOVERNANCE_FRAMEWORK.md)** - Ecosystem-based Adaptation governance principles integration
+- **[STAKEHOLDER_PARTICIPATION_GUIDE.md](STAKEHOLDER_PARTICIPATION_GUIDE.md)** - Multi-stakeholder participation and engagement guide
+- **[EBA_IMPLEMENTATION_ROADMAP.md](EBA_IMPLEMENTATION_ROADMAP.md)** - Practical implementation roadmap with barriers and solutions
+
 ### Additional Resources
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Guidelines for contributing to the project
 - **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** - Community standards and expectations
@@ -120,6 +138,9 @@ Comprehensive documentation is available to help you understand and use the syst
 - **For Security**: Review [SECURITY.md](SECURITY.md)
 - **For Performance**: Check [PERFORMANCE.md](PERFORMANCE.md)
 - **All Features**: Explore [FEATURES.md](FEATURES.md)
+- **Governance Principles**: See [EBA_GOVERNANCE_FRAMEWORK.md](EBA_GOVERNANCE_FRAMEWORK.md)
+- **Stakeholder Guide**: Read [STAKEHOLDER_PARTICIPATION_GUIDE.md](STAKEHOLDER_PARTICIPATION_GUIDE.md)
+- **Implementation Roadmap**: Follow [EBA_IMPLEMENTATION_ROADMAP.md](EBA_IMPLEMENTATION_ROADMAP.md)
 
 ---
 
