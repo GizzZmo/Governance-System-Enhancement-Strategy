@@ -55,6 +55,11 @@ module hybrid_governance_pkg::governance { // Package name remains for module de
     const E_INVALID_VOTING_DURATION: u64 = 10;
     const E_ARITHMETIC_OVERFLOW: u64 = 11;
     const E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE: u64 = 12;
+    const E_DESCRIPTION_TOO_SHORT: u64 = 13;
+    const E_DESCRIPTION_TOO_LONG: u64 = 14;
+    const E_INVALID_FUNDING_AMOUNT: u64 = 15;
+    const E_INVALID_RECIPIENT_ADDRESS: u64 = 16;
+    const E_ZERO_TOTAL_STAKE: u64 = 17;
 
     // === Events ===
     struct ProposalCreated has copy, drop {
@@ -86,6 +91,17 @@ module hybrid_governance_pkg::governance { // Package name remains for module de
     }
 
     // === Public Entry Functions ===
+    /// Submit a new governance proposal with comprehensive input validation
+    /// @param description_vec: UTF-8 encoded description of the proposal
+    /// @param proposal_type: Type of proposal (0=General, 1=Minor Param, 2=Critical Param, 3=Funding, 4=Emergency)
+    /// @param funding_amount_opt: Required for funding proposals (type 3)
+    /// @param funding_recipient_opt: Required for funding proposals (type 3)
+    /// @param param_target_module_opt: Required for parameter change proposals (types 1, 2)
+    /// @param param_name_opt: Required for parameter change proposals (types 1, 2)
+    /// @param param_new_value_bcs_opt: Required for parameter change proposals (types 1, 2)
+    /// @param system_state: Reference to the governance system state
+    /// @param clock: Reference to the clock for timestamps
+    /// @param ctx: Transaction context
     public entry fun submit_proposal(
         description_vec: vector<u8>,
         proposal_type: u8,
@@ -98,6 +114,14 @@ module hybrid_governance_pkg::governance { // Package name remains for module de
         clock: &Clock,
         ctx: &TxContext
     ) {
+        // Security: Validate description length
+        let desc_len = vector::length(&description_vec);
+        assert!(desc_len >= 10, E_DESCRIPTION_TOO_SHORT); // At least 10 characters
+        assert!(desc_len <= 10000, E_DESCRIPTION_TOO_LONG); // Max 10KB description
+        
+        // Security: Validate proposal type is within valid range
+        assert!(proposal_type <= 4, E_INVALID_PROPOSAL_TYPE);
+
         let creator_addr = sender(ctx);
         let current_time_ms = clock::timestamp_ms(clock);
         let voting_duration_ms = determine_voting_duration(proposal_type);
@@ -106,9 +130,16 @@ module hybrid_governance_pkg::governance { // Package name remains for module de
         let quorum_percentage = determine_quorum_percentage(proposal_type);
         // Call using the imported module name directly or with 'crate::'
         let total_stake = delegation_staking::get_total_system_stake(system_state) as u128;
+        
+        // Security: Ensure there is stake in the system
+        assert!(total_stake > 0, E_ZERO_TOTAL_STAKE);
 
+        // Security: Validate required fields based on proposal type
         if (proposal_type == 3) {
             assert!(is_some(&funding_amount_opt) && is_some(&funding_recipient_opt), E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE);
+            // Security: Validate funding amount is positive
+            let amount = *option_borrow(&funding_amount_opt);
+            assert!(amount > 0, E_INVALID_FUNDING_AMOUNT);
         } else if (proposal_type == 1 || proposal_type == 2) {
             assert!(is_some(&param_target_module_opt) && is_some(&param_name_opt) && is_some(&param_new_value_bcs_opt), E_MISSING_REQUIRED_DATA_FOR_PROPOSAL_TYPE);
         };
