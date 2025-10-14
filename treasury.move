@@ -71,6 +71,9 @@ module hybrid_governance_pkg::treasury {
     const E_INVALID_CONFIG_VALUE: u64 = 213;
     const E_PROPOSER_MUST_BE_APPROVER: u64 = 214; // For direct withdrawal proposals
     const E_REASON_TOO_LONG: u64 = 215; // Example for input validation
+    const E_INVALID_MIN_APPROVALS: u64 = 216; // Min approvals must be reasonable
+    const E_ZERO_RECIPIENT_ADDRESS: u64 = 217; // Prevent sending to zero address
+    const E_AMOUNT_EXCEEDS_BALANCE: u64 = 218; // Amount check for safety
 
     // === Init ===
     /// Initializes the Treasury: creates TreasuryChest, TreasuryAccessCap, and TreasuryAdminCap.
@@ -138,6 +141,12 @@ module hybrid_governance_pkg::treasury {
     // --- On-Chain Multi-Sig Direct Withdrawal Functions ---
 
     /// Proposes a direct withdrawal from treasury, initiated by an approver.
+    /// Security: Validates proposer authorization, amount, and reason length
+    /// @param treasury_chest: Mutable reference to treasury
+    /// @param recipient: Address to receive funds
+    /// @param amount: Amount to withdraw (must be positive and <= balance)
+    /// @param reason: UTF-8 encoded reason (max 256 bytes)
+    /// @param ctx: Transaction context
     public entry fun propose_direct_withdrawal(
         treasury_chest: &mut TreasuryChest,
         recipient: address,
@@ -146,9 +155,19 @@ module hybrid_governance_pkg::treasury {
         ctx: &mut TxContext
     ) {
         let proposer = sender(ctx);
+        
+        // Security: Verify proposer is an authorized approver
         assert!(vector::contains(&treasury_chest.approvers, &proposer), E_PROPOSER_MUST_BE_APPROVER);
+        
+        // Security: Validate amount is positive
         assert!(amount > 0, E_AMOUNT_MUST_BE_POSITIVE);
-        assert!(vector::length(&reason) <= 256, E_REASON_TOO_LONG); // Example validation
+        
+        // Security: Check treasury has sufficient funds
+        let current_balance = value(&treasury_chest.funds);
+        assert!(amount <= current_balance, E_AMOUNT_EXCEEDS_BALANCE);
+        
+        // Security: Validate reason length to prevent abuse
+        assert!(vector::length(&reason) <= 256, E_REASON_TOO_LONG);
 
         let proposal_internal_id = treasury_chest.next_withdrawal_proposal_id;
         treasury_chest.next_withdrawal_proposal_id = proposal_internal_id + 1;
