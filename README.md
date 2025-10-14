@@ -38,12 +38,18 @@ Key use cases:
 - **Treasury Management**: Multi-signature wallets, recurring funding, proposer bonding mechanisms, and audit logs for financial transparency.
 - **Staking Integration**: Tie voting power to staked tokens for improved network security.
 - **Emergency Proposals**: Enable fast-track governance for urgent matters.
-- **X (Twitter) Integration**: Link community discussions to governance proposals for better engagement.
+- **Analytics & Monitoring**: Track governance metrics, voter participation, and proposal success rates.
+- **Interactive CLI**: User-friendly command-line interface for all governance operations.
+- **Comprehensive Documentation**: Extensive guides, API docs, and tutorials for all skill levels.
 
 ### Detailed Feature Examples
 - **Hybrid Voting**: Quadratic voting to prevent dominance by large stakeholders, ensuring proportional representation.
-- **Treasury**: Use multi-sig wallets (e.g., Gnosis Safe) to secure funds and enable transparent audits.
+- **Treasury**: Use multi-sig wallets for secure funds and enable transparent audits.
 - **Staking**: Boost token utility by integrating staking rewards with governance participation.
+- **Helper Functions**: Utilities for checking proposal status, previewing voting power, and more.
+- **Analytics Module**: Track proposals, votes, success rates, and participation metrics.
+
+For a complete feature list, see [FEATURES.md](FEATURES.md).
 
 ---
 
@@ -94,10 +100,13 @@ Comprehensive documentation is available to help you understand and use the syst
 
 ### Core Documentation
 - **[ABOUT.md](ABOUT.md)** - Comprehensive overview of the project, vision, and features
+- **[QUICKSTART.md](QUICKSTART.md)** - Get started in 5 minutes
 - **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** - Complete API reference for all modules and functions
 - **[USER_GUIDE.md](USER_GUIDE.md)** - Step-by-step guide for users, from staking to voting
 - **[SECURITY.md](SECURITY.md)** - Security policy, best practices, and vulnerability reporting
 - **[PERFORMANCE.md](PERFORMANCE.md)** - Performance optimization guide and benchmarks
+- **[FEATURES.md](FEATURES.md)** - Complete feature overview and roadmap
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
 
 ### Additional Resources
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Guidelines for contributing to the project
@@ -105,10 +114,12 @@ Comprehensive documentation is available to help you understand and use the syst
 - **[Use Cases](use_cases.md)** - Detailed real-world application scenarios
 
 ### Quick Links
-- **For Users**: Start with [USER_GUIDE.md](USER_GUIDE.md)
+- **New Users**: Start with [QUICKSTART.md](QUICKSTART.md)
+- **For Users**: Continue with [USER_GUIDE.md](USER_GUIDE.md)
 - **For Developers**: See [API_DOCUMENTATION.md](API_DOCUMENTATION.md)
 - **For Security**: Review [SECURITY.md](SECURITY.md)
 - **For Performance**: Check [PERFORMANCE.md](PERFORMANCE.md)
+- **All Features**: Explore [FEATURES.md](FEATURES.md)
 
 ---
 
