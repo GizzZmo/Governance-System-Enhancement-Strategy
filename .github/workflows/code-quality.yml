@@ -18,23 +18,26 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-          components: rustfmt, clippy
+      # Rust toolchain setup removed - this is a Move-based project, not Rust
+      # - name: Setup Rust toolchain
+      #   uses: actions-rs/toolchain@v1
+      #   with:
+      #     toolchain: stable
+      #     profile: minimal
+      #     override: true
+      #     components: rustfmt, clippy
 
-      - name: Check code formatting
-        run: |
-          cargo fmt --all -- --check
-        shell: bash
+      # Cargo formatting check removed - this is a Move-based project, not Rust
+      # - name: Check code formatting
+      #   run: |
+      #     cargo fmt --all -- --check
+      #   shell: bash
 
-      - name: Run Clippy
-        run: |
-          cargo clippy --all-targets --all-features -- -D warnings
-        shell: bash
+      # Cargo clippy check removed - this is a Move-based project, not Rust
+      # - name: Run Clippy
+      #   run: |
+      #     cargo clippy --all-targets --all-features -- -D warnings
+      #   shell: bash
 
       - name: Check for TODO/FIXME comments
         run: |
