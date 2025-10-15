@@ -1,17 +1,16 @@
-# File: Move.toml (for your MinimalTest package)
+# File: Move.toml - EbA Governance System
 
 [package]
-name = "MinimalTest" 
-version = "0.0.1"
-# edition = "2025.beta" # Optional: if you want to use a specific Move edition
+name = "hybrid_governance_pkg"
+version = "1.0.0"
+edition = "2024.beta"
 
 [dependencies]
-# MoveStdlib = { git = "https://github.com/move-language/move", rev = "..." }
-# Sui = { git = "https://github.com/MystenLabs/sui", rev = "..." }
-# This section should be EMPTY for standard Sui framework dependencies.
-# The Sui CLI (pinned to mainnet-v1.48.2 in your CI) will automatically 
-# provide Sui, MoveStdlib, Bridge, SuiSystem, etc.
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
 
 [addresses]
-minimal_test_addr = "0x1" 
-# Or whatever you named the address for your minimal_module.move
+hybrid_governance_pkg = "0x0"
+minimal_test_addr = "0x1"
+
+[dev-addresses]
+# Development addresses can be added here for testing
