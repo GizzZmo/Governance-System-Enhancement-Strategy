@@ -158,7 +158,7 @@ module hybrid_governance_pkg::governance_analytics {
     public fun record_vote_cast(
         analytics: &mut GovernanceAnalytics,
         voter: address,
-        timestamp: u64
+        _timestamp: u64
     ) {
         analytics.total_votes_cast = analytics.total_votes_cast + 1;
 
