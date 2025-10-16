@@ -36,8 +36,9 @@ jobs:
         shell: bash
 
       - name: Scan for secrets
+        if: github.event.before != github.event.after
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: main
-          head: HEAD
+          base: ${{ github.event.before }}
+          head: ${{ github.event.after }}
